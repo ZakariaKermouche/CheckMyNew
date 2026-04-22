@@ -323,7 +323,9 @@ export async function handleRegisterAdBatch(
     let success = 0;
     const mappings = [];
     const failedAdIds = [];
-    for (const payload of payloads) {
+    const failedIndices = [];
+    for (let idx = 0; idx < payloads.length; idx += 1) {
+      const payload = payloads[idx];
       // media_content comes only from attachment-derived urls.
       const images = Array.isArray(payload.attachment_media_urls)
         ? payload.attachment_media_urls.filter(Boolean)
@@ -357,6 +359,7 @@ export async function handleRegisterAdBatch(
         });
         if (!out || status === "failure") {
           if (adanalystAdId) failedAdIds.push(String(adanalystAdId));
+          failedIndices.push(idx);
           continue;
         }
         success++;
@@ -376,6 +379,7 @@ export async function handleRegisterAdBatch(
           type: payload?.type || null,
         });
         if (adanalystAdId) failedAdIds.push(String(adanalystAdId));
+        failedIndices.push(idx);
       }
     }
 
@@ -385,6 +389,7 @@ export async function handleRegisterAdBatch(
       total: payloads.length,
       mappings,
       failedAdIds,
+      failedIndices,
     });
   } catch (e) {
     sendResponse?.({ ok: false, error: e.toString() });

@@ -151,8 +151,16 @@ class FBStorageManager {
             ? response.failedAdIds.map((id) => String(id))
             : []
         );
+        const failedIndexSet = new Set(
+          Array.isArray(response.failedIndices)
+            ? response.failedIndices
+                .map((n) => Number(n))
+                .filter((n) => Number.isInteger(n) && n >= 0)
+            : []
+        );
 
-        const failedItems = dataToSend.filter((item) => {
+        const failedItems = dataToSend.filter((item, idx) => {
+          if (failedIndexSet.has(idx)) return true;
           const payload = item?.register_ad_payload || item;
           const key =
             payload?.adanalyst_ad_id != null
@@ -168,7 +176,8 @@ class FBStorageManager {
           typeof response.total === "number" &&
           typeof response.count === "number" &&
           response.count < response.total &&
-          failedItems.length === 0;
+          failedItems.length === 0 &&
+          failedIndexSet.size === 0;
 
         if (failedItems.length > 0 || partialUnknownFailure) {
           const toRequeue = partialUnknownFailure ? dataToSend : failedItems;
