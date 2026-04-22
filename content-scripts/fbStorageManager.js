@@ -125,9 +125,19 @@ class FBStorageManager {
         throw new Error("Extension context invalidated");
       }
 
-      const payloads = dataToSend
-        .map((item) => item?.register_ad_payload || item)
-        .filter(Boolean);
+      const payloads = [];
+      const payloadSourceIndices = [];
+      dataToSend.forEach((item, idx) => {
+        const payload = item?.register_ad_payload || item;
+        if (!payload) return;
+        payloads.push(payload);
+        payloadSourceIndices.push(idx);
+      });
+
+      if (payloads.length === 0) {
+        this.clearStoredData();
+        return;
+      }
 
       const response = await this.sendMessageWithTimeout(
         {
@@ -151,16 +161,21 @@ class FBStorageManager {
             ? response.failedAdIds.map((id) => String(id))
             : []
         );
-        const failedIndexSet = new Set(
-          Array.isArray(response.failedIndices)
-            ? response.failedIndices
-                .map((n) => Number(n))
-                .filter((n) => Number.isInteger(n) && n >= 0)
-            : []
-        );
+          const failedPayloadIndexSet = new Set(
+            Array.isArray(response.failedIndices)
+              ? response.failedIndices
+                  .map((n) => Number(n))
+                  .filter((n) => Number.isInteger(n) && n >= 0)
+              : []
+          );
+          const failedSourceIndexSet = new Set(
+            Array.from(failedPayloadIndexSet)
+              .map((payloadIdx) => payloadSourceIndices[payloadIdx])
+              .filter((srcIdx) => Number.isInteger(srcIdx) && srcIdx >= 0)
+          );
 
         const failedItems = dataToSend.filter((item, idx) => {
-          if (failedIndexSet.has(idx)) return true;
+          if (failedSourceIndexSet.has(idx)) return true;
           const payload = item?.register_ad_payload || item;
           const key =
             payload?.adanalyst_ad_id != null
@@ -177,7 +192,7 @@ class FBStorageManager {
           typeof response.count === "number" &&
           response.count < response.total &&
           failedItems.length === 0 &&
-          failedIndexSet.size === 0;
+          failedPayloadIndexSet.size === 0;
 
         if (failedItems.length > 0 || partialUnknownFailure) {
           const toRequeue = partialUnknownFailure ? dataToSend : failedItems;
