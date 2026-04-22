@@ -493,11 +493,11 @@
         typeof postIdentifier === "string" && /^\d{6,}$/.test(postIdentifier)
           ? postIdentifier
           : null;
-      const htmlId =
-        postType === "publicPost"
-          ? String(normalizedPostIdentifier || this.generateAdAnalystId())
-          : graphQlAdId ||
-            String(normalizedPostIdentifier || this.generateAdAnalystId());
+      const stableBackendId = graphQlAdId || normalizedPostIdentifier;
+      if (!stableBackendId) {
+        return null;
+      }
+      const htmlId = String(stableBackendId);
 
       const visibleFraction =
         typeof postData?.visible_fraction === "number"
@@ -632,6 +632,10 @@
       postData.queued = true;
       if (!postData.register_ad_payload) {
         postData.register_ad_payload = this.buildRegisterAdPayload(postData);
+        if (!postData.register_ad_payload) {
+          postData.queued = false;
+          return false;
+        }
       }
       const prepared = this.preparePostForQueue(postData);
 
