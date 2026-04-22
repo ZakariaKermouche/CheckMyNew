@@ -129,18 +129,15 @@ class FBStorageManager {
         .map((item) => item?.register_ad_payload || item)
         .filter(Boolean);
 
-      const response = await this.sendMessageWithTimeout(
-        {
-          type: "REGISTER_AD_BATCH",
-          payloads,
-          metadata: {
-            timestamp: Date.now(),
-            pageUrl: window.location.href,
-            count,
-          },
+      const response = await chrome.runtime.sendMessage({
+        type: "REGISTER_AD_BATCH",
+        payloads,
+        metadata: {
+          timestamp: Date.now(),
+          pageUrl: window.location.href,
+          count,
         },
-        this.sendTimeoutMs
-      );
+      });
       console.log("[CMN] 📬 Backend batch response:", response);
 
       if (response?.ok) {
@@ -228,7 +225,10 @@ class FBStorageManager {
         [this.storageKey]: this.queue,
         cmn_last_save: Date.now(),
       });
-
+      try {
+        localStorage.setItem(this.fallbackStorageKey, JSON.stringify(this.queue));
+      } catch (_) {}
+      
       console.log("[CMN] ✅ Saved successfully");
     } catch (error) {
       console.error("[CMN] ❌ Storage save error:", error.message, error);
