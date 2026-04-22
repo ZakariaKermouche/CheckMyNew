@@ -154,16 +154,23 @@ class FBGraphQLInterceptor {
 
       const send = xhr.send;
       xhr.send = function (body) {
+        const extensionUrl =
+          typeof this.__cmn_url === "string" &&
+          this.__cmn_url.startsWith("chrome-extension://");
+        if (extensionUrl) {
+          // Extension context was reloaded/unloaded while this page stayed open.
+          // Skip extension URL requests from the page context to avoid repeated net::ERR_FAILED noise.
+          return;
+        }
+
         if (this.__cmn_url?.includes("graphql")) {
           self.maybeCaptureDocIdFromBody(body);
         }
         try {
           return send.call(this, body);
         } catch (e) {
-          const badExtensionUrl =
-            typeof this.__cmn_url === "string" &&
-            this.__cmn_url.startsWith("chrome-extension://invalid/");
-          if (badExtensionUrl) {
+          const msg = String(e?.message || e || "");
+          if (msg.includes("ERR_FAILED")) {
             return;
           }
           throw e;
