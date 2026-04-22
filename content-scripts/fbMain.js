@@ -221,6 +221,33 @@
           const match = dataFtid.match(/(\d{6,})/);
           if (match?.[1]) return match[1];
         }
+
+        // Try permalink-style anchors:
+        // /{page}/posts/{id}, /groups/{gid}/posts/{id}, /permalink/{id}, story_fbid={id}
+        const anchors = Array.from(element.querySelectorAll('a[href]'));
+        for (const a of anchors) {
+          const href = a.getAttribute("href") || "";
+          if (!href) continue;
+          const absolute = href.startsWith("http")
+            ? href
+            : `https://www.facebook.com${href.startsWith("/") ? href : `/${href}`}`;
+          let url;
+          try {
+            url = new URL(absolute);
+          } catch (_) {
+            continue;
+          }
+
+          const qStory = url.searchParams.get("story_fbid");
+          if (qStory && /^\d{6,}$/.test(qStory)) return qStory;
+
+          const path = url.pathname || "";
+          const m =
+            path.match(/\/posts\/(\d{6,})/) ||
+            path.match(/\/permalink\/(\d{6,})/) ||
+            path.match(/\/videos\/(\d{6,})/);
+          if (m?.[1]) return m[1];
+        }
       } catch (_) {}
 
       return null;
