@@ -1,0 +1,15 @@
+body {
+  width: 290px;
+  font-size: 13px;
+}
+
+.card {
+  border-radius: 8px;
+}
+
+#adsSummary ul,
+#newsSummary ul,
+#prefsSummary ul {
+  padding-left: 18px;
+  margin-bottom: 0;
+}

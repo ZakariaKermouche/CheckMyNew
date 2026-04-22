@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "CheckMyNews",
+  "version": "1.0.4",
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "offscreen",
+    "notifications",
+    "alarms"
+  ],
+  "host_permissions": [
+    "*://*.facebook.com/*",
+    "*://adanalystplus.lix.polytechnique.fr/*"
+  ],
+  "action": {
+    "default_popup": "ui/popup.html",
+    "default_icon": "media/alert1.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "offscreen.html",
+        "offscreen.js",
+        "media/*",
+        "page-scripts/fbGraphQLInterceptor.page.js",
+        "page-scripts/fbBootstrapExtractor.page.js"
+      ],
+      "matches": ["*://*/*"]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://*.facebook.com/*"],
+      "all_frames": true,
+      "js": [
+        "content-scripts/fbBootstrapBridge.js",
+        "content-scripts/injectBootstrapExtractor.js",
+        "content-scripts/injectGraphQLInterceptor.js",
+        "content-scripts/feedAds.js",
+        "content-scripts/fbObserver.js",
+        "content-scripts/fbPostDetector.js",
+        "content-scripts/fbDataExtractor.js",
+        "content-scripts/fbNewsFilter.js",
+        "content-scripts/fbStorageManager.js",
+        "content-scripts/fbMessageHandler.js",
+        "content-scripts/fbUserDetector.js",
+        "content-scripts/visibility-tracker.js",
+        "content-scripts/explanation-fetcher.js",
+        "content-scripts/fbMain.js",
+        "content-scripts/interaction-tracker.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}
