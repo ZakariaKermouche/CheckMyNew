@@ -322,6 +322,7 @@ export async function handleRegisterAdBatch(
 
     let success = 0;
     const mappings = [];
+    const failedAdIds = [];
     for (const payload of payloads) {
       // media_content comes only from attachment-derived urls.
       const images = Array.isArray(payload.attachment_media_urls)
@@ -345,10 +346,21 @@ export async function handleRegisterAdBatch(
       validateAndLogRegisterAdPayload(requestPayload);
       try {
         const out = await postJSON(URLS_SERVER.registerAd, requestForServer);
-        success++;
-        const dbId = out?.ad_id || null;
+        const status = String(out?.status || "").toLowerCase();
         const adanalystAdId =
           payload?.adanalyst_ad_id || payload?.html_ad_id || null;
+        console.log("[CMN] registerAd response:", {
+          status: out?.status || null,
+          ad_id: out?.ad_id || null,
+          reason: out?.reason || null,
+          adanalyst_ad_id: adanalystAdId,
+        });
+        if (!out || status === "failure") {
+          if (adanalystAdId) failedAdIds.push(String(adanalystAdId));
+          continue;
+        }
+        success++;
+        const dbId = out?.ad_id || null;
         if (dbId && adanalystAdId) {
           mappings.push({
             adanalyst_ad_id: String(adanalystAdId),
@@ -356,10 +368,24 @@ export async function handleRegisterAdBatch(
           });
         }
       } catch (e) {
+        const adanalystAdId =
+          payload?.adanalyst_ad_id || payload?.html_ad_id || null;
+        console.error("[CMN] registerAd failed:", {
+          error: e?.message || String(e),
+          adanalyst_ad_id: adanalystAdId,
+          type: payload?.type || null,
+        });
+        if (adanalystAdId) failedAdIds.push(String(adanalystAdId));
       }
     }
 
-    sendResponse?.({ ok: true, count: success, mappings });
+    sendResponse?.({
+      ok: true,
+      count: success,
+      total: payloads.length,
+      mappings,
+      failedAdIds,
+    });
   } catch (e) {
     sendResponse?.({ ok: false, error: e.toString() });
   }
