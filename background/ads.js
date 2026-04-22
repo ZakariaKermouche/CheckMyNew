@@ -345,6 +345,12 @@ export async function handleRegisterAdBatch(
       validateAndLogRegisterAdPayload(requestPayload);
       try {
         const out = await postJSON(URLS_SERVER.registerAd, requestForServer);
+        console.log("[CMN] registerAd response:", {
+          status: out?.status || null,
+          ad_id: out?.ad_id || null,
+          reason: out?.reason || null,
+          adanalyst_ad_id: payload?.adanalyst_ad_id || payload?.html_ad_id || null,
+        });
         success++;
         const dbId = out?.ad_id || null;
         const adanalystAdId =
@@ -356,6 +362,11 @@ export async function handleRegisterAdBatch(
           });
         }
       } catch (e) {
+        console.error("[CMN] registerAd failed:", {
+          error: e?.message || String(e),
+          adanalyst_ad_id: payload?.adanalyst_ad_id || payload?.html_ad_id || null,
+          type: payload?.type || null,
+        });
       }
     }
 
