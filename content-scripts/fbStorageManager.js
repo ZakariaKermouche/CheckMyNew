@@ -50,6 +50,9 @@ class FBStorageManager {
       this.sendData();
     }
 
+    // Persist queue eagerly so data survives tab crashes/reloads.
+    this.saveUnsentData();
+
     return true;
   }
 
@@ -100,7 +103,7 @@ class FBStorageManager {
     }
 
     this.isSending = true;
-    const dataToSend = [...this.queue];
+    const dataToSend = this.queue.splice(0, this.queue.length);
     const count = dataToSend.length;
     
     console.log("[CMN] 📤 Starting to send", count, "posts to background");
@@ -110,9 +113,13 @@ class FBStorageManager {
         throw new Error("Extension context invalidated");
       }
 
+      const payloads = dataToSend
+        .map((item) => item?.register_ad_payload || item)
+        .filter(Boolean);
+
       const response = await chrome.runtime.sendMessage({
-        type: "POSTS_COLLECTED",
-        data: dataToSend,
+        type: "REGISTER_AD_BATCH",
+        payloads,
         metadata: {
           timestamp: Date.now(),
           pageUrl: window.location.href,
@@ -120,13 +127,14 @@ class FBStorageManager {
         },
       });
 
-      if (response?.success) {
+      if (response?.ok) {
         console.log("[CMN] ✅ Successfully sent", count, "posts");
-        this.queue = [];
+        this.applyDbIdMappings(dataToSend, response.mappings || []);
         this.clearStoredData();
       } else {
         console.warn("[CMN] ⚠️  Backend returned unsuccessful response:", response);
-        this.queue.unshift(...dataToSend);
+        this.queue = [...dataToSend, ...this.queue];
+        this.saveUnsentData();
       }
     } catch (error) {
       const msg = error?.message || String(error);
@@ -139,7 +147,7 @@ class FBStorageManager {
         console.error("[CMN] ❌ Send failed:", msg);
       }
       
-      this.queue.unshift(...dataToSend);
+      this.queue = [...dataToSend, ...this.queue];
       this.saveUnsentData();
     } finally {
       this.isSending = false;
