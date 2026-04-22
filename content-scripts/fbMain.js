@@ -255,13 +255,15 @@
     }
 
     generateAdAnalystId() {
-      const randomNum = Math.random().toString(36);
-      const timeSincePageLoad =
-        typeof performance !== "undefined"
-          ? performance.now().toString(36)
-          : "0";
-      const time = Date.now().toString(36);
-      return `AdAn${randomNum}${timeSincePageLoad}${time}`;
+      const randomDigits = Math.floor(Math.random() * 1e9)
+        .toString()
+        .padStart(9, "0");
+      const perfDigits = Math.floor(
+        typeof performance !== "undefined" ? performance.now() : 0
+      )
+        .toString()
+        .padStart(6, "0");
+      return `${Date.now()}${perfDigits}${randomDigits}`;
     }
 
     extractLandingPagesFromElement(element) {
@@ -460,10 +462,15 @@
         ? String(postData.ad.ad_id)
         : null;
       const postIdentifier = postData.post_id || postData.id || null;
+      const normalizedPostIdentifier =
+        typeof postIdentifier === "string" && /^\d{6,}$/.test(postIdentifier)
+          ? postIdentifier
+          : null;
       const htmlId =
         postType === "publicPost"
-          ? String(postIdentifier || this.generateAdAnalystId())
-          : graphQlAdId || String(postIdentifier || this.generateAdAnalystId());
+          ? String(normalizedPostIdentifier || this.generateAdAnalystId())
+          : graphQlAdId ||
+            String(normalizedPostIdentifier || this.generateAdAnalystId());
 
       const visibleFraction =
         typeof postData?.visible_fraction === "number"
