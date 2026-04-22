@@ -10,6 +10,7 @@ class FBStorageManager {
     this.contextInvalidated = false;
     this.storageKey = "cmn_unsent_posts";
     this.fallbackStorageKey = "cmn_unsent_posts_fallback";
+    this.sendTimeoutMs = 15000;
   }
 
   log(...args) {
@@ -166,6 +167,15 @@ class FBStorageManager {
     }
   }
 
+  async sendMessageWithTimeout(message, timeoutMs) {
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`sendMessage timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+    return Promise.race([chrome.runtime.sendMessage(message), timeoutPromise]);
+  }
+
   applyDbIdMappings(dataToSend, mappings) {
     if (!Array.isArray(mappings) || mappings.length === 0) return;
     const byKey = new Map();
@@ -198,13 +208,19 @@ class FBStorageManager {
   // Save unsent data to chrome.storage
   async saveUnsentData() {
     try {
+      try {
+        localStorage.setItem(this.fallbackStorageKey, JSON.stringify(this.queue));
+      } catch (_) {}
+
       if (!chrome?.runtime?.id) {
-        console.error("[CMN] ❌ Storage save failed: Extension context invalidated");
+        console.warn(
+          "[CMN] ⚠️ chrome.runtime unavailable; saved queue only to localStorage fallback"
+        );
         return;
       }
-      
+
       console.log("[CMN] 💾 Saving", this.queue.length, "posts to storage");
-      
+
       await chrome.storage.local.set({
         [this.storageKey]: this.queue,
         cmn_last_save: Date.now(),
@@ -262,15 +278,13 @@ class FBStorageManager {
         // Try to send immediately
         this.sendData();
         // Also save to storage as backup
-        if (chrome?.runtime?.id) {
-          this.saveUnsentData();
-        }
+        this.saveUnsentData();
       }
     });
 
     // Also handle visibility change
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden && this.queue.length > 0 && chrome?.runtime?.id) {
+      if (document.hidden && this.queue.length > 0) {
         this.saveUnsentData();
       }
     });
