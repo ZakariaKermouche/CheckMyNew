@@ -899,12 +899,58 @@
             this.visibilityTracker.track(postElement, matchedPostId);
           }
         } else {
-          this.log("DOM fingerprint cached for later match", domFingerprint);
-          this.pendingDomByFingerprint.set(domFingerprint, {
-            element: postElement,
-            domFoundAt: Date.now(),
-            domMetadata,
-          });
+          // Fallback: still track DOM post even without GraphQL match.
+          // This prevents collection from stalling when Facebook virtualized
+          // feed updates do not yield parsable GraphQL payloads.
+          const fallbackPostId =
+            domPostId ||
+            `dom_${this.postDetector.generatePostId(postElement)}`;
+
+          let fallback = this.graphqlPostsMap.get(fallbackPostId);
+          if (!fallback) {
+            fallback = {
+              id: fallbackPostId,
+              post_id: fallbackPostId,
+              author: postData.author || null,
+              message: postData.message || null,
+              to: postData.to || null,
+              source: "dom_fallback",
+              detectedAt: Date.now(),
+              inDOM: true,
+              domFoundAt: Date.now(),
+              isSponsored: this.postDetector.isSponsored(postElement),
+              visibleDuration: [],
+              attachments: [],
+            };
+            this.graphqlPostsMap.set(fallbackPostId, fallback);
+            this.registerFingerprint(fallback);
+          } else {
+            fallback.inDOM = true;
+            fallback.domFoundAt = Date.now();
+            if (!fallback.message && postData.message) fallback.message = postData.message;
+            if (!fallback.author?.name && postData.author?.name) {
+              fallback.author = { name: postData.author.name };
+            }
+            if (!fallback.to?.name && postData.to?.name) {
+              fallback.to = { name: postData.to.name };
+            }
+          }
+
+          this.domElementByPostId.set(fallbackPostId, postElement);
+          if (this.visibilityTracker) {
+            this.visibilityTracker.track(postElement, fallbackPostId);
+          }
+
+          this.log("DOM fallback tracked without GraphQL match", fallbackPostId);
+
+          // Keep pending mapping too in case a GraphQL match arrives later.
+          if (domFingerprint) {
+            this.pendingDomByFingerprint.set(domFingerprint, {
+              element: postElement,
+              domFoundAt: Date.now(),
+              domMetadata,
+            });
+          }
         }
 
         this.postDetector.markAsProcessed(postElement);
