@@ -146,7 +146,41 @@ class FBStorageManager {
       if (response?.ok) {
         console.log("[CMN] ✅ Successfully sent", count, "posts");
         this.applyDbIdMappings(dataToSend, response.mappings || []);
-        this.clearStoredData();
+        const failedIdSet = new Set(
+          Array.isArray(response.failedAdIds)
+            ? response.failedAdIds.map((id) => String(id))
+            : []
+        );
+
+        const failedItems = dataToSend.filter((item) => {
+          const payload = item?.register_ad_payload || item;
+          const key =
+            payload?.adanalyst_ad_id != null
+              ? String(payload.adanalyst_ad_id)
+              : payload?.html_ad_id != null
+              ? String(payload.html_ad_id)
+              : null;
+          if (!key) return false;
+          return failedIdSet.has(key);
+        });
+
+        const partialUnknownFailure =
+          typeof response.total === "number" &&
+          typeof response.count === "number" &&
+          response.count < response.total &&
+          failedItems.length === 0;
+
+        if (failedItems.length > 0 || partialUnknownFailure) {
+          const toRequeue = partialUnknownFailure ? dataToSend : failedItems;
+          console.warn(
+            "[CMN] ⚠️ Backend failed to register some posts; requeueing",
+            toRequeue.length
+          );
+          this.queue = [...toRequeue, ...this.queue];
+          this.saveUnsentData();
+        } else {
+          this.clearStoredData();
+        }
       } else {
         console.warn("[CMN] ⚠️  Backend returned unsuccessful response:", response);
         this.queue = [...dataToSend, ...this.queue];
