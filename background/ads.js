@@ -324,8 +324,23 @@ export async function handleRegisterAdBatch(
     const mappings = [];
     const failedAdIds = [];
     const failedIndices = [];
+    const droppedIndices = [];
     for (let idx = 0; idx < payloads.length; idx += 1) {
       const payload = payloads[idx];
+      const adanalystAdId =
+        payload?.adanalyst_ad_id || payload?.html_ad_id || null;
+      if (
+        adanalystAdId != null &&
+        !/^\d{6,}$/.test(String(adanalystAdId))
+      ) {
+        console.warn("[CMN] Dropping payload with non-numeric ad id:", {
+          idx,
+          adanalyst_ad_id: adanalystAdId,
+          type: payload?.type || null,
+        });
+        droppedIndices.push(idx);
+        continue;
+      }
       // media_content comes only from attachment-derived urls.
       const images = Array.isArray(payload.attachment_media_urls)
         ? payload.attachment_media_urls.filter(Boolean)
@@ -349,8 +364,6 @@ export async function handleRegisterAdBatch(
       try {
         const out = await postJSON(URLS_SERVER.registerAd, requestForServer);
         const status = String(out?.status || "").toLowerCase();
-        const adanalystAdId =
-          payload?.adanalyst_ad_id || payload?.html_ad_id || null;
         console.log("[CMN] registerAd response:", {
           status: out?.status || null,
           ad_id: out?.ad_id || null,
@@ -371,8 +384,6 @@ export async function handleRegisterAdBatch(
           });
         }
       } catch (e) {
-        const adanalystAdId =
-          payload?.adanalyst_ad_id || payload?.html_ad_id || null;
         console.error("[CMN] registerAd failed:", {
           error: e?.message || String(e),
           adanalyst_ad_id: adanalystAdId,
@@ -390,6 +401,7 @@ export async function handleRegisterAdBatch(
       mappings,
       failedAdIds,
       failedIndices,
+      droppedIndices,
     });
   } catch (e) {
     sendResponse?.({ ok: false, error: e.toString() });

@@ -161,20 +161,34 @@ class FBStorageManager {
             ? response.failedAdIds.map((id) => String(id))
             : []
         );
-          const failedPayloadIndexSet = new Set(
+        const failedPayloadIndexSet = new Set(
             Array.isArray(response.failedIndices)
               ? response.failedIndices
                   .map((n) => Number(n))
                   .filter((n) => Number.isInteger(n) && n >= 0)
               : []
           );
-          const failedSourceIndexSet = new Set(
+        const failedSourceIndexSet = new Set(
             Array.from(failedPayloadIndexSet)
               .map((payloadIdx) => payloadSourceIndices[payloadIdx])
               .filter((srcIdx) => Number.isInteger(srcIdx) && srcIdx >= 0)
           );
+        const droppedPayloadIndexSet = new Set(
+          Array.isArray(response.droppedIndices)
+            ? response.droppedIndices
+                .map((n) => Number(n))
+                .filter((n) => Number.isInteger(n) && n >= 0)
+            : []
+        );
+        const droppedSourceIndexSet = new Set(
+          Array.from(droppedPayloadIndexSet)
+            .map((payloadIdx) => payloadSourceIndices[payloadIdx])
+            .filter((srcIdx) => Number.isInteger(srcIdx) && srcIdx >= 0)
+        );
 
         const failedItems = dataToSend.filter((item, idx) => {
+          // Dropped items are invalid payloads and should not be retried.
+          if (droppedSourceIndexSet.has(idx)) return false;
           if (failedSourceIndexSet.has(idx)) return true;
           const payload = item?.register_ad_payload || item;
           const key =
@@ -187,10 +201,14 @@ class FBStorageManager {
           return failedIdSet.has(key);
         });
 
+        const knownHandledCount =
+          (typeof response.count === "number" ? response.count : 0) +
+          failedPayloadIndexSet.size +
+          droppedPayloadIndexSet.size;
+
         const partialUnknownFailure =
           typeof response.total === "number" &&
-          typeof response.count === "number" &&
-          response.count < response.total &&
+          knownHandledCount < response.total &&
           failedItems.length === 0 &&
           failedPayloadIndexSet.size === 0;
 
