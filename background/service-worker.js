@@ -322,9 +322,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         );
         return;
 
-      case "POSTS_COLLECTED":
-        sendResponse({ success: true });
+      case "POSTS_COLLECTED": {
+        const payloads = Array.isArray(message.data)
+          ? message.data
+              .map((item) => item?.register_ad_payload || item)
+              .filter(Boolean)
+          : [];
+        if (payloads.length === 0) {
+          sendResponse({ ok: true, count: 0 });
+          return;
+        }
+        await ads.handleRegisterAdBatch(
+          state,
+          URLS_SERVER,
+          { payloads },
+          sendResponse
+        );
         return;
+      }
 
       case "postVisibility": {
         if (!(await hasUserConsent())) {
@@ -338,10 +353,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           end_ts: message.end_ts,
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updatePosstVisibilityEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] postVisibility backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
@@ -353,22 +369,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
-          sendResponse({ ok: false, skipped: true, error: "missing_dbId" });
+          sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
         }
         const payload = {
           dbId,
+          ad_id: dbId,
+          html_ad_id: message.postId || message.adId || null,
+          adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,
           started_ts: message.started_ts || null,
           end_ts: message.end_ts || null,
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updateAdVisibilityEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] adVisibility backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
@@ -380,13 +400,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
-          sendResponse({ ok: false, skipped: true, error: "missing_dbId" });
+          sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
         }
         const payload = {
           dbId,
+          ad_id: dbId,
+          html_ad_id: message.postId || message.adId || null,
+          adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,
           timeElapsed: message.timeElapsed || 0,
           frames: JSON.stringify(message.frames || []),
@@ -395,10 +418,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           imagePosition: JSON.stringify(message.imagePosition || {}),
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updateMouseMoveEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] mouseMove backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
@@ -410,22 +434,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
-          sendResponse({ ok: false, skipped: true, error: "missing_dbId" });
+          sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
         }
         const payload = {
           ts: message.timestamp || Date.now(),
           dbId,
+          ad_id: dbId,
+          html_ad_id: message.postId || message.adId || null,
+          adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,
           type: message.eventType || "ImageClicked",
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updateAdClickEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] mouseClick backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
