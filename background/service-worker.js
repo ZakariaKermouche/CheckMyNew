@@ -147,8 +147,15 @@ async function sendProlificId() {
 
 
 function isBackendFailure(payload) {
-  const status = String(payload?.status || "").toLowerCase();
-  return !status || status === "failure";
+  if (!payload || typeof payload !== "object") return true;
+  if (payload?.ok === false) return true;
+  const statusRaw = payload?.status;
+  if (typeof statusRaw === "string") {
+    const status = statusRaw.toLowerCase();
+    return status === "failure" || status === "error";
+  }
+  // Some endpoints return objects without `status` (e.g., { ok: true }).
+  return false;
 }
 
 async function postJSONWithRetry(
@@ -322,9 +329,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         );
         return;
 
-      case "POSTS_COLLECTED":
-        sendResponse({ success: true });
+      case "POSTS_COLLECTED": {
+        const payloads = Array.isArray(message.data)
+          ? message.data
+              .map((item) => item?.register_ad_payload || item)
+              .filter(Boolean)
+          : [];
+        if (payloads.length === 0) {
+          sendResponse({ ok: true, count: 0 });
+          return;
+        }
+        await ads.handleRegisterAdBatch(
+          state,
+          URLS_SERVER,
+          { payloads },
+          sendResponse
+        );
         return;
+      }
 
       case "postVisibility": {
         if (!(await hasUserConsent())) {
@@ -338,10 +360,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           end_ts: message.end_ts,
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updatePosstVisibilityEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] postVisibility backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
@@ -353,22 +376,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
-          sendResponse({ ok: false, skipped: true, error: "missing_dbId" });
+          sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
         }
         const payload = {
           dbId,
+          ad_id: dbId,
+          html_ad_id: message.postId || message.adId || null,
+          adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,
           started_ts: message.started_ts || null,
           end_ts: message.end_ts || null,
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updateAdVisibilityEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] adVisibility backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
@@ -380,13 +407,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
-          sendResponse({ ok: false, skipped: true, error: "missing_dbId" });
+          sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
         }
         const payload = {
           dbId,
+          ad_id: dbId,
+          html_ad_id: message.postId || message.adId || null,
+          adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,
           timeElapsed: message.timeElapsed || 0,
           frames: JSON.stringify(message.frames || []),
@@ -395,10 +425,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           imagePosition: JSON.stringify(message.imagePosition || {}),
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updateMouseMoveEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] mouseMove backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
@@ -410,25 +441,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
-          sendResponse({ ok: false, skipped: true, error: "missing_dbId" });
+          sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
         }
         const payload = {
           ts: message.timestamp || Date.now(),
           dbId,
+          ad_id: dbId,
+          html_ad_id: message.postId || message.adId || null,
+          adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,
           type: message.eventType || "ImageClicked",
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updateAdClickEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] mouseClick backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
-          sendResponse({ ok: false, error: e.toString() });
+          // Fallback endpoint for click/reaction telemetry when update_ad_event fails.
+          const fallbackPayload = {
+            user_id: state.CURRENT_USER_ID,
+            dbId,
+            ad_id: message.adId || null,
+            post_id: message.postId || null,
+            event_type: message.eventType || "ImageClicked",
+            ts: message.timestamp || Date.now(),
+            url: message.url || null,
+          };
+          try {
+            const fallbackOut = await postJSONWithRetry(
+              URLS_SERVER.registerClickedAd,
+              hashPayload(fallbackPayload),
+              { requireSuccessStatus: false }
+            );
+            console.log(
+              "[CMN] mouseClick fallback(register_clickedad) response:",
+              fallbackOut || null
+            );
+            sendResponse({ ok: true, fallback: true });
+          } catch (fallbackErr) {
+            sendResponse({ ok: false, error: fallbackErr.toString() });
+          }
         }
         return;
       }
