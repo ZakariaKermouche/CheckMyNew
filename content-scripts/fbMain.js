@@ -240,6 +240,13 @@
 
           const qStory = url.searchParams.get("story_fbid");
           if (qStory && /^\d{6,}$/.test(qStory)) return qStory;
+          const qFbid = url.searchParams.get("fbid");
+          if (qFbid && /^\d{6,}$/.test(qFbid)) return qFbid;
+          const qMulti = url.searchParams.get("multi_permalinks");
+          if (qMulti) {
+            const mMulti = qMulti.match(/(\d{6,})/);
+            if (mMulti?.[1]) return mMulti[1];
+          }
 
           const path = url.pathname || "";
           const m =
@@ -247,6 +254,11 @@
             path.match(/\/permalink\/(\d{6,})/) ||
             path.match(/\/videos\/(\d{6,})/);
           if (m?.[1]) return m[1];
+
+          // Last resort: extract a large numeric token from full URL.
+          const rawUrl = `${url.pathname}${url.search}`;
+          const mAny = rawUrl.match(/(\d{10,})/);
+          if (mAny?.[1]) return mAny[1];
         }
       } catch (_) {}
 
