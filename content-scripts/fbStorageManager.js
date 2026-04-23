@@ -68,6 +68,26 @@ class FBStorageManager {
     };
   }
 
+  shouldDropLegacyDomEntry(item) {
+    const payload = item?.register_ad_payload || item || {};
+    const keys = [
+      payload?.adanalyst_ad_id,
+      payload?.html_ad_id,
+      payload?.post_id,
+      item?.post_id,
+      item?.id,
+    ]
+      .filter((v) => v != null)
+      .map((v) => String(v));
+    return keys.some((v) => v.startsWith("dom_"));
+  }
+
+  sanitizeQueue(items) {
+    const input = Array.isArray(items) ? items : [];
+    const cleaned = input.filter((item) => !this.shouldDropLegacyDomEntry(item));
+    return { cleaned, dropped: input.length - cleaned.length };
+  }
+
   // Update a queued post by id/post_id
   updatePost(id, updates = {}) {
     if (!id) return;
@@ -317,8 +337,16 @@ class FBStorageManager {
       const result = await chrome.storage.local.get([this.storageKey]);
       const fromChrome = result[this.storageKey];
       if (fromChrome && Array.isArray(fromChrome)) {
-        console.log("[CMN] 📥 Loaded", fromChrome.length, "posts from chrome.storage");
-        this.queue = fromChrome;
+        const { cleaned, dropped } = this.sanitizeQueue(fromChrome);
+        console.log("[CMN] 📥 Loaded", cleaned.length, "posts from chrome.storage");
+        if (dropped > 0) {
+          console.warn("[CMN] 🧹 Dropped legacy dom_* entries:", dropped);
+          await chrome.storage.local.set({
+            [this.storageKey]: cleaned,
+            cmn_last_save: Date.now(),
+          });
+        }
+        this.queue = cleaned;
         return;
       }
 
@@ -326,8 +354,15 @@ class FBStorageManager {
       if (fallbackRaw) {
         const parsed = JSON.parse(fallbackRaw);
         if (Array.isArray(parsed)) {
-          this.queue = parsed;
-          console.log("[CMN] 📥 Loaded", parsed.length, "posts from localStorage fallback");
+          const { cleaned, dropped } = this.sanitizeQueue(parsed);
+          this.queue = cleaned;
+          console.log("[CMN] 📥 Loaded", cleaned.length, "posts from localStorage fallback");
+          if (dropped > 0) {
+            console.warn("[CMN] 🧹 Dropped legacy dom_* fallback entries:", dropped);
+            try {
+              localStorage.setItem(this.fallbackStorageKey, JSON.stringify(cleaned));
+            } catch (_) {}
+          }
           return;
         }
       }
