@@ -458,12 +458,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         try {
           const out = await postJSONWithRetry(
             URLS_SERVER.updateAdClickEvents,
-            hashPayload(payload)
+            hashPayload(payload),
+            { requireSuccessStatus: false }
           );
           console.log("[CMN] mouseClick backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
-          sendResponse({ ok: false, error: e.toString() });
+          // Fallback endpoint for click/reaction telemetry when update_ad_event fails.
+          const fallbackPayload = {
+            user_id: state.CURRENT_USER_ID,
+            dbId,
+            ad_id: message.adId || null,
+            post_id: message.postId || null,
+            event_type: message.eventType || "ImageClicked",
+            ts: message.timestamp || Date.now(),
+            url: message.url || null,
+          };
+          try {
+            const fallbackOut = await postJSONWithRetry(
+              URLS_SERVER.registerClickedAd,
+              hashPayload(fallbackPayload),
+              { requireSuccessStatus: false }
+            );
+            console.log(
+              "[CMN] mouseClick fallback(register_clickedad) response:",
+              fallbackOut || null
+            );
+            sendResponse({ ok: true, fallback: true });
+          } catch (fallbackErr) {
+            sendResponse({ ok: false, error: fallbackErr.toString() });
+          }
         }
         return;
       }
