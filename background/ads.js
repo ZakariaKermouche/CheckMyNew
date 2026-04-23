@@ -327,12 +327,22 @@ export async function handleRegisterAdBatch(
     const droppedIndices = [];
     for (let idx = 0; idx < payloads.length; idx += 1) {
       const payload = payloads[idx];
-      const adanalystAdId =
+      let adanalystAdId =
         payload?.adanalyst_ad_id || payload?.html_ad_id || null;
       if (
         adanalystAdId != null &&
         !/^\d{6,}$/.test(String(adanalystAdId))
       ) {
+        const fbIdFallback = payload?.fb_id ? String(payload.fb_id) : null;
+        if (fbIdFallback && /^\d{6,}$/.test(fbIdFallback)) {
+          adanalystAdId = fbIdFallback;
+          payload.adanalyst_ad_id = fbIdFallback;
+          payload.html_ad_id = fbIdFallback;
+          console.log("[CMN] Replaced non-numeric ad id with fb_id fallback:", {
+            idx,
+            adanalyst_ad_id: fbIdFallback,
+          });
+        } else {
         console.warn("[CMN] Dropping payload with non-numeric ad id:", {
           idx,
           adanalyst_ad_id: adanalystAdId,
@@ -340,6 +350,7 @@ export async function handleRegisterAdBatch(
         });
         droppedIndices.push(idx);
         continue;
+        }
       }
       // media_content comes only from attachment-derived urls.
       const images = Array.isArray(payload.attachment_media_urls)

@@ -147,8 +147,15 @@ async function sendProlificId() {
 
 
 function isBackendFailure(payload) {
-  const status = String(payload?.status || "").toLowerCase();
-  return !status || status === "failure";
+  if (!payload || typeof payload !== "object") return true;
+  if (payload?.ok === false) return true;
+  const statusRaw = payload?.status;
+  if (typeof statusRaw === "string") {
+    const status = statusRaw.toLowerCase();
+    return status === "failure" || status === "error";
+  }
+  // Some endpoints return objects without `status` (e.g., { ok: true }).
+  return false;
 }
 
 async function postJSONWithRetry(
