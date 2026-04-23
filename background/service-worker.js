@@ -376,6 +376,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const payload = {
           dbId,
+          ad_id: dbId,
           html_ad_id: message.postId || message.adId || null,
           adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,
@@ -406,6 +407,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const payload = {
           dbId,
+          ad_id: dbId,
           html_ad_id: message.postId || message.adId || null,
           adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,
@@ -440,6 +442,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const payload = {
           ts: message.timestamp || Date.now(),
           dbId,
+          ad_id: dbId,
           html_ad_id: message.postId || message.adId || null,
           adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,

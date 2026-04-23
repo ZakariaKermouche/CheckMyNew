@@ -52,10 +52,9 @@
       ""
     ).toLowerCase();
     const probe = `${text} ${aria}`;
-    if (target?.closest?.("img")) return "ImageClicked";
     if (probe.includes("comment")) return "CommentButtonClick";
     if (probe.includes("share")) return "Share";
-    if (probe.includes("like") || probe.includes("j’aime")) return "Like";
+    if (probe.includes("like") || probe.includes("j’aime") || probe.includes("j'aime")) return "Like";
     if (probe.includes("love")) return "Love";
     if (probe.includes("haha")) return "Haha";
     if (probe.includes("wow")) return "Wow";
@@ -63,6 +62,7 @@
     if (probe.includes("sad")) return "Sad";
     if (probe.includes("angry")) return "Angry";
     if (probe.includes("react")) return "Reaction";
+    if (target?.closest?.("img")) return "ImageClicked";
     return "ImageClicked";
   }
 
