@@ -322,9 +322,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         );
         return;
 
-      case "POSTS_COLLECTED":
-        sendResponse({ success: true });
+      case "POSTS_COLLECTED": {
+        const payloads = Array.isArray(message.data)
+          ? message.data
+              .map((item) => item?.register_ad_payload || item)
+              .filter(Boolean)
+          : [];
+        if (payloads.length === 0) {
+          sendResponse({ ok: true, count: 0 });
+          return;
+        }
+        await ads.handleRegisterAdBatch(
+          state,
+          URLS_SERVER,
+          { payloads },
+          sendResponse
+        );
         return;
+      }
 
       case "postVisibility": {
         if (!(await hasUserConsent())) {
