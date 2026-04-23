@@ -221,6 +221,45 @@
           const match = dataFtid.match(/(\d{6,})/);
           if (match?.[1]) return match[1];
         }
+
+        // Try permalink-style anchors:
+        // /{page}/posts/{id}, /groups/{gid}/posts/{id}, /permalink/{id}, story_fbid={id}
+        const anchors = Array.from(element.querySelectorAll('a[href]'));
+        for (const a of anchors) {
+          const href = a.getAttribute("href") || "";
+          if (!href) continue;
+          const absolute = href.startsWith("http")
+            ? href
+            : `https://www.facebook.com${href.startsWith("/") ? href : `/${href}`}`;
+          let url;
+          try {
+            url = new URL(absolute);
+          } catch (_) {
+            continue;
+          }
+
+          const qStory = url.searchParams.get("story_fbid");
+          if (qStory && /^\d{6,}$/.test(qStory)) return qStory;
+          const qFbid = url.searchParams.get("fbid");
+          if (qFbid && /^\d{6,}$/.test(qFbid)) return qFbid;
+          const qMulti = url.searchParams.get("multi_permalinks");
+          if (qMulti) {
+            const mMulti = qMulti.match(/(\d{6,})/);
+            if (mMulti?.[1]) return mMulti[1];
+          }
+
+          const path = url.pathname || "";
+          const m =
+            path.match(/\/posts\/(\d{6,})/) ||
+            path.match(/\/permalink\/(\d{6,})/) ||
+            path.match(/\/videos\/(\d{6,})/);
+          if (m?.[1]) return m[1];
+
+          // Last resort: extract a large numeric token from full URL.
+          const rawUrl = `${url.pathname}${url.search}`;
+          const mAny = rawUrl.match(/(\d{10,})/);
+          if (mAny?.[1]) return mAny[1];
+        }
       } catch (_) {}
 
       return null;
@@ -255,13 +294,15 @@
     }
 
     generateAdAnalystId() {
-      const randomNum = Math.random().toString(36);
-      const timeSincePageLoad =
-        typeof performance !== "undefined"
-          ? performance.now().toString(36)
-          : "0";
-      const time = Date.now().toString(36);
-      return `AdAn${randomNum}${timeSincePageLoad}${time}`;
+      const randomDigits = Math.floor(Math.random() * 1e9)
+        .toString()
+        .padStart(9, "0");
+      const perfDigits = Math.floor(
+        typeof performance !== "undefined" ? performance.now() : 0
+      )
+        .toString()
+        .padStart(6, "0");
+      return `${Date.now()}${perfDigits}${randomDigits}`;
     }
 
     extractLandingPagesFromElement(element) {
@@ -460,10 +501,15 @@
         ? String(postData.ad.ad_id)
         : null;
       const postIdentifier = postData.post_id || postData.id || null;
-      const htmlId =
-        postType === "publicPost"
-          ? String(postIdentifier || this.generateAdAnalystId())
-          : graphQlAdId || String(postIdentifier || this.generateAdAnalystId());
+      const normalizedPostIdentifier =
+        typeof postIdentifier === "string" && /^\d{6,}$/.test(postIdentifier)
+          ? postIdentifier
+          : null;
+      const stableBackendId = graphQlAdId || normalizedPostIdentifier;
+      if (!stableBackendId) {
+        return null;
+      }
+      const htmlId = String(stableBackendId);
 
       const visibleFraction =
         typeof postData?.visible_fraction === "number"
@@ -598,6 +644,10 @@
       postData.queued = true;
       if (!postData.register_ad_payload) {
         postData.register_ad_payload = this.buildRegisterAdPayload(postData);
+        if (!postData.register_ad_payload) {
+          postData.queued = false;
+          return false;
+        }
       }
       const prepared = this.preparePostForQueue(postData);
 
@@ -899,12 +949,58 @@
             this.visibilityTracker.track(postElement, matchedPostId);
           }
         } else {
-          this.log("DOM fingerprint cached for later match", domFingerprint);
-          this.pendingDomByFingerprint.set(domFingerprint, {
-            element: postElement,
-            domFoundAt: Date.now(),
-            domMetadata,
-          });
+          // Fallback: still track DOM post even without GraphQL match.
+          // This prevents collection from stalling when Facebook virtualized
+          // feed updates do not yield parsable GraphQL payloads.
+          const fallbackPostId =
+            domPostId ||
+            `dom_${this.postDetector.generatePostId(postElement)}`;
+
+          let fallback = this.graphqlPostsMap.get(fallbackPostId);
+          if (!fallback) {
+            fallback = {
+              id: fallbackPostId,
+              post_id: fallbackPostId,
+              author: postData.author || null,
+              message: postData.message || null,
+              to: postData.to || null,
+              source: "dom_fallback",
+              detectedAt: Date.now(),
+              inDOM: true,
+              domFoundAt: Date.now(),
+              isSponsored: this.postDetector.isSponsored(postElement),
+              visibleDuration: [],
+              attachments: [],
+            };
+            this.graphqlPostsMap.set(fallbackPostId, fallback);
+            this.registerFingerprint(fallback);
+          } else {
+            fallback.inDOM = true;
+            fallback.domFoundAt = Date.now();
+            if (!fallback.message && postData.message) fallback.message = postData.message;
+            if (!fallback.author?.name && postData.author?.name) {
+              fallback.author = { name: postData.author.name };
+            }
+            if (!fallback.to?.name && postData.to?.name) {
+              fallback.to = { name: postData.to.name };
+            }
+          }
+
+          this.domElementByPostId.set(fallbackPostId, postElement);
+          if (this.visibilityTracker) {
+            this.visibilityTracker.track(postElement, fallbackPostId);
+          }
+
+          this.log("DOM fallback tracked without GraphQL match", fallbackPostId);
+
+          // Keep pending mapping too in case a GraphQL match arrives later.
+          if (domFingerprint) {
+            this.pendingDomByFingerprint.set(domFingerprint, {
+              element: postElement,
+              domFoundAt: Date.now(),
+              domMetadata,
+            });
+          }
         }
 
         this.postDetector.markAsProcessed(postElement);
@@ -1256,7 +1352,7 @@
         if (!postId) return;
 
         const postData = this.graphqlPostsMap.get(postId);
-        if (!postData || !postData.isSponsored) return;
+        if (!postData) return;
 
         const startedTs = detail.started_ts || postData.visibleAt || null;
         const endTs = detail.end_ts || null;
@@ -1276,10 +1372,11 @@
           });
         }
 
-        this.storageManager.updatePost(postData.id, {
+        this.storageManager.updatePost(postData.id || postData.post_id, {
           visibleDuration: postData.visibleDuration,
         });
 
+        if (!postData.isSponsored) return;
         const dbId = postData.dbId || null;
         if (!dbId) return;
 
