@@ -140,6 +140,14 @@
     } catch (_) {}
   }
 
+  function resolveTrackingId({ dbId, postId, adId }) {
+    if (dbId) return String(dbId);
+    const fallback = postId || adId || null;
+    if (!fallback) return null;
+    const s = String(fallback);
+    return /^\d{6,}$/.test(s) ? s : null;
+  }
+
   function flushPendingClicks() {
     if (pendingClicks.length === 0) return;
     const now = nowMs();
@@ -148,10 +156,11 @@
       if (now - ev.timestamp > MAX_RETRY_AGE_MS) {
         continue;
       }
-      const { dbId } = getPostContextFromTarget(ev.target);
-      if (dbId) {
+      const { dbId, postId, adId } = getPostContextFromTarget(ev.target);
+      const trackingId = resolveTrackingId({ dbId, postId, adId });
+      if (trackingId) {
         sendClickEvent({
-          dbId,
+          dbId: trackingId,
           eventType: ev.eventType,
           postId: ev.postId,
           adId: ev.adId,
@@ -174,8 +183,15 @@
 
       const { postId, adId, dbId } = getPostContextFromTarget(event.target);
       const eventType = inferClickType(event.target);
-      if (dbId) {
-        sendClickEvent({ dbId, eventType, postId, adId, timestamp: ts });
+      const trackingId = resolveTrackingId({ dbId, postId, adId });
+      if (trackingId) {
+        sendClickEvent({
+          dbId: trackingId,
+          eventType,
+          postId,
+          adId,
+          timestamp: ts,
+        });
       } else if (postId) {
         pendingClicks.push({
           target: event.target,
@@ -196,9 +212,10 @@
       const ts = nowMs();
       if (ts - lastMove < MOVE_THROTTLE_MS) return;
       lastMove = ts;
-      const { dbId, adId, lastAdPosition, imagePosition } =
+      const { dbId, adId, postId, lastAdPosition, imagePosition } =
         getPostContextFromTarget(event.target);
-      if (!dbId) return;
+      const trackingId = resolveTrackingId({ dbId, postId, adId });
+      if (!trackingId) return;
       const windowSnapshot = getWindowSnapshot();
       const frames = [
         {
@@ -213,7 +230,9 @@
           chrome.runtime
             .sendMessage({
               type: "mouseMove",
-              dbId,
+              dbId: trackingId,
+              postId,
+              adId,
               timeElapsed: getTimeElapsed(),
               frames,
               window: windowSnapshot,
@@ -223,7 +242,7 @@
             })
             .then((resp) => {
               console.log("[CMN] 🖱️ move sent:", {
-                dbId,
+                dbId: trackingId,
                 response: resp || null,
               });
             })
