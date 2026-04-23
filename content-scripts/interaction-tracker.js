@@ -70,7 +70,10 @@
     let el = target instanceof HTMLElement ? target : target?.parentElement;
     for (let i = 0; el && i < maxDepth; i += 1) {
       for (const [mapPostId, mapEl] of cmn?.domElementByPostId || []) {
-        if (mapEl === el) {
+        if (
+          mapEl &&
+          (mapEl === el || (typeof mapEl.contains === "function" && mapEl.contains(el)))
+        ) {
           return cmn.graphqlPostsMap?.get(mapPostId) || null;
         }
       }
@@ -201,6 +204,8 @@
           timestamp: ts,
         });
         console.log("[CMN] ⏳ click queued waiting dbId:", { postId, eventType });
+      } else {
+        console.warn("[CMN] ⚠️ click skipped: no trackable post/ad context");
       }
     },
     true
