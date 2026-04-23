@@ -369,13 +369,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
-          sendResponse({ ok: false, skipped: true, error: "missing_dbId" });
+          sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
         }
         const payload = {
           dbId,
+          html_ad_id: message.postId || message.adId || null,
+          adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,
           started_ts: message.started_ts || null,
           end_ts: message.end_ts || null,
@@ -397,13 +399,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
-          sendResponse({ ok: false, skipped: true, error: "missing_dbId" });
+          sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
         }
         const payload = {
           dbId,
+          html_ad_id: message.postId || message.adId || null,
+          adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,
           timeElapsed: message.timeElapsed || 0,
           frames: JSON.stringify(message.frames || []),
@@ -428,14 +432,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
-          sendResponse({ ok: false, skipped: true, error: "missing_dbId" });
+          sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
         }
         const payload = {
           ts: message.timestamp || Date.now(),
           dbId,
+          html_ad_id: message.postId || message.adId || null,
+          adanalyst_ad_id: message.postId || message.adId || null,
           user_id: state.CURRENT_USER_ID,
           type: message.eventType || "ImageClicked",
         };
