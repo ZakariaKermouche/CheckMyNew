@@ -204,7 +204,18 @@ class FBVisibilityTracker {
               started_ts: tracked.visibleStart,
               end_ts: now,
             })
-            .catch(() => {});
+            .then((resp) => {
+              console.log("[CMN] 👁️ postVisibility sent:", {
+                postId,
+                response: resp || null,
+              });
+            })
+            .catch((err) => {
+              console.warn(
+                "[CMN] ⚠️ postVisibility send failed:",
+                err?.message || String(err)
+              );
+            });
         }
       } catch (_) {}
     }
