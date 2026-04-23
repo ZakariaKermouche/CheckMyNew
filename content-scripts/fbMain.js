@@ -1352,7 +1352,7 @@
         if (!postId) return;
 
         const postData = this.graphqlPostsMap.get(postId);
-        if (!postData || !postData.isSponsored) return;
+        if (!postData) return;
 
         const startedTs = detail.started_ts || postData.visibleAt || null;
         const endTs = detail.end_ts || null;
@@ -1372,10 +1372,11 @@
           });
         }
 
-        this.storageManager.updatePost(postData.id, {
+        this.storageManager.updatePost(postData.id || postData.post_id, {
           visibleDuration: postData.visibleDuration,
         });
 
+        if (!postData.isSponsored) return;
         const dbId = postData.dbId || null;
         if (!dbId) return;
 
