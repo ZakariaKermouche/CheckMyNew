@@ -353,10 +353,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           end_ts: message.end_ts,
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updatePosstVisibilityEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] postVisibility backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
@@ -380,10 +381,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           end_ts: message.end_ts || null,
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updateAdVisibilityEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] adVisibility backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
@@ -410,10 +412,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           imagePosition: JSON.stringify(message.imagePosition || {}),
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updateMouseMoveEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] mouseMove backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
@@ -437,10 +440,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           type: message.eventType || "ImageClicked",
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updateAdClickEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] mouseClick backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
