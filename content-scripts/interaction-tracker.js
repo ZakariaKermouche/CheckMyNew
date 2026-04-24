@@ -254,28 +254,18 @@
 
       try {
         if (chrome?.runtime?.id) {
-          chrome.runtime
-            .sendMessage({
-              type: "mouseMove",
-              dbId: trackingId,
-              postId,
-              adId,
-              timeElapsed: getTimeElapsed(),
-              frames,
-              window: windowSnapshot,
-              lastAdPosition,
-              imagePosition,
-              timestamp: ts,
-            })
-            .then((resp) => {
-              console.log("[CMN] 🖱️ move sent:", {
-                dbId: trackingId,
-                response: resp || null,
-              });
-            })
-            .catch((err) => {
-              console.warn("[CMN] ⚠️ move send failed:", err?.message || String(err));
-            });
+          chrome.runtime.sendMessage({
+            type: "mouseMove",
+            dbId: trackingId,
+            postId,
+            adId,
+            timeElapsed: getTimeElapsed(),
+            frames,
+            window: windowSnapshot,
+            lastAdPosition,
+            imagePosition,
+            timestamp: ts,
+          });
         }
       } catch (_) {}
     },

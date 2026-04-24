@@ -425,11 +425,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           imagePosition: JSON.stringify(message.imagePosition || {}),
         };
         try {
-          const out = await postJSONWithRetry(
+          await postJSONWithRetry(
             URLS_SERVER.updateMouseMoveEvents,
             hashPayload(payload)
           );
-          console.log("[CMN] mouseMove backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
