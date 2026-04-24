@@ -548,7 +548,7 @@
       const payload = {
         raw_ad: safeRawAd,
         html_ad_id: htmlId,
-        fb_id: postData.post_id || postData.id || null,
+        fb_id: String(normalizedPostIdentifier || graphQlAdId || htmlId),
         objId: isSponsored ? postData.id || null : null,
         visible: true,
         visible_fraction: visibleFraction,
