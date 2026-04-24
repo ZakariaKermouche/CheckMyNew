@@ -376,7 +376,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
           sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
@@ -407,7 +407,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
           sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
@@ -425,10 +425,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           imagePosition: JSON.stringify(message.imagePosition || {}),
         };
         try {
-          await postJSONWithRetry(
+          const out = await postJSONWithRetry(
             URLS_SERVER.updateMouseMoveEvents,
             hashPayload(payload)
           );
+          console.log("[CMN] mouseMove backend response:", out || null);
           sendResponse({ ok: true });
         } catch (e) {
           sendResponse({ ok: false, error: e.toString() });
@@ -440,7 +441,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || null;
+        const dbId = message.dbId || message.postId || message.adId || null;
         if (!dbId) {
           sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
@@ -457,7 +458,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         try {
           const out = await postJSONWithRetry(
             URLS_SERVER.updateAdClickEvents,
-            hashPayload(payload)
+            hashPayload(payload),
+            { requireSuccessStatus: false }
           );
           console.log("[CMN] mouseClick backend response:", out || null);
           sendResponse({ ok: true });
