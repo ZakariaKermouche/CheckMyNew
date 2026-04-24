@@ -17,6 +17,18 @@ async function postJSON(url, bodyObj) {
   return res.json();
 }
 
+function extractBackendDbId(out) {
+  return (
+    out?.ad_id ||
+    out?.id ||
+    out?.dbId ||
+    out?.adId ||
+    out?.inserted_id ||
+    out?.insertId ||
+    null
+  );
+}
+
 const REGISTER_AD_REQUIRED_BASE = ["type", "timestamp", "raw_ad", "user_id"];
 const REGISTER_AD_REQUIRED_BY_TYPE = {
   frontAd: [
@@ -197,7 +209,7 @@ export async function handleFrontAd(state, URLS_SERVER, message, sendResponse) {
     // 4) Reply to content script
     sendResponse?.({
       saved: resp.status !== "FAILURE",
-      dbId: resp.ad_id || null,
+      dbId: extractBackendDbId(resp),
     });
   } catch (e) {
     sendResponse?.({ saved: false, error: e.toString() });
@@ -239,7 +251,7 @@ export async function handleSideAd(state, URLS_SERVER, message, sendResponse) {
 
     sendResponse?.({
       saved: resp.status !== "FAILURE",
-      dbId: resp.ad_id || null,
+      dbId: extractBackendDbId(resp),
     });
   } catch (e) {
     sendResponse?.({ saved: false, error: e.toString() });
@@ -387,11 +399,16 @@ export async function handleRegisterAdBatch(
           continue;
         }
         success++;
-        const dbId = out?.ad_id || null;
+        const dbId = extractBackendDbId(out);
         if (dbId && adanalystAdId) {
           mappings.push({
             adanalyst_ad_id: String(adanalystAdId),
             dbId: String(dbId),
+          });
+        } else if (!dbId) {
+          console.warn("[CMN] registerAd success without db id field:", {
+            adanalyst_ad_id: adanalystAdId,
+            keys: Object.keys(out || {}),
           });
         }
       } catch (e) {

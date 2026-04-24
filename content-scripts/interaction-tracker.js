@@ -144,11 +144,8 @@
   }
 
   function resolveTrackingId({ dbId, postId, adId }) {
-    if (dbId) return String(dbId);
-    const fallback = postId || adId || null;
-    if (!fallback) return null;
-    const s = String(fallback);
-    return /^\d{6,}$/.test(s) ? s : null;
+    if (!dbId) return null;
+    return String(dbId);
   }
 
   function flushPendingClicks() {

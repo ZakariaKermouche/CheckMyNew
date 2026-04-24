@@ -205,7 +205,6 @@
             const id =
               parsed?.top_level_post_id ||
               parsed?.top_level_post_id_for_top_level_comments ||
-              parsed?.content_owner_id_new ||
               null;
             if (id && /^\d{6,}$/.test(String(id))) return String(id);
           } catch (_) {
@@ -549,7 +548,7 @@
       const payload = {
         raw_ad: safeRawAd,
         html_ad_id: htmlId,
-        fb_id: postData.post_id || postData.id || null,
+        fb_id: String(normalizedPostIdentifier || graphQlAdId || htmlId),
         objId: isSponsored ? postData.id || null : null,
         visible: true,
         visible_fraction: visibleFraction,

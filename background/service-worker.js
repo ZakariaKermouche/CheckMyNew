@@ -383,9 +383,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const payload = {
           dbId,
-          ad_id: dbId,
-          html_ad_id: message.postId || message.adId || null,
-          adanalyst_ad_id: message.postId || message.adId || null,
+          id: dbId,
+          html_ad_id: null,
+          adanalyst_ad_id: null,
           user_id: state.CURRENT_USER_ID,
           started_ts: message.started_ts || null,
           end_ts: message.end_ts || null,
@@ -414,9 +414,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const payload = {
           dbId,
-          ad_id: dbId,
-          html_ad_id: message.postId || message.adId || null,
-          adanalyst_ad_id: message.postId || message.adId || null,
+          id: dbId,
+          html_ad_id: null,
+          adanalyst_ad_id: null,
           user_id: state.CURRENT_USER_ID,
           timeElapsed: message.timeElapsed || 0,
           frames: JSON.stringify(message.frames || []),
@@ -449,9 +449,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const payload = {
           ts: message.timestamp || Date.now(),
           dbId,
-          ad_id: dbId,
-          html_ad_id: message.postId || message.adId || null,
-          adanalyst_ad_id: message.postId || message.adId || null,
+          id: dbId,
+          html_ad_id: null,
+          adanalyst_ad_id: null,
           user_id: state.CURRENT_USER_ID,
           type: message.eventType || "ImageClicked",
         };
@@ -468,7 +468,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const fallbackPayload = {
             user_id: state.CURRENT_USER_ID,
             dbId,
-            ad_id: message.adId || null,
+            id: dbId,
             post_id: message.postId || null,
             event_type: message.eventType || "ImageClicked",
             ts: message.timestamp || Date.now(),
