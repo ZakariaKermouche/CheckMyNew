@@ -44,7 +44,19 @@
     };
   }
 
-  function inferClickType(target) {
+  function getClickedUrl(target) {
+    const anchor = target?.closest?.("a[href]");
+    if (!anchor) return null;
+    const href = anchor.getAttribute("href") || anchor.href || null;
+    if (!href) return null;
+    try {
+      return new URL(href, window.location.origin).href;
+    } catch (_) {
+      return href;
+    }
+  }
+
+  function inferClickType(target, clickedUrl = null) {
     const text = (target?.textContent || "").trim().toLowerCase();
     const aria = (
       target?.getAttribute?.("aria-label") ||
@@ -52,6 +64,14 @@
       ""
     ).toLowerCase();
     const probe = `${text} ${aria}`;
+    if (
+      probe.includes("follow") ||
+      probe.includes("suivre") ||
+      probe.includes("abonner")
+    ) {
+      return "FollowPage";
+    }
+    if (clickedUrl) return "VisitingLandingURL";
     if (probe.includes("comment")) return "CommentButtonClick";
     if (probe.includes("share")) return "Share";
     if (probe.includes("like") || probe.includes("j’aime") || probe.includes("j'aime")) return "Like";
@@ -117,7 +137,7 @@
     };
   }
 
-  function sendClickEvent({ dbId, eventType, postId, adId, timestamp }) {
+  function sendClickEvent({ dbId, eventType, postId, adId, timestamp, landingUrl = null }) {
     try {
       if (!chrome?.runtime?.id) return;
       chrome.runtime
@@ -128,6 +148,7 @@
           postId,
           adId,
           timestamp,
+          landingUrl,
         })
         .then((resp) => {
           console.log("[CMN] 🖱️ click sent:", {
@@ -165,6 +186,7 @@
           postId: ev.postId,
           adId: ev.adId,
           timestamp: ev.timestamp,
+          landingUrl: ev.landingUrl || null,
         });
       } else {
         keep.push(ev);
@@ -182,7 +204,8 @@
       lastClick = ts;
 
       const { postId, adId, dbId } = getPostContextFromTarget(event.target);
-      const eventType = inferClickType(event.target);
+      const landingUrl = getClickedUrl(event.target);
+      const eventType = inferClickType(event.target, landingUrl);
       const trackingId = resolveTrackingId({ dbId, postId, adId });
       if (trackingId) {
         sendClickEvent({
@@ -191,6 +214,7 @@
           postId,
           adId,
           timestamp: ts,
+          landingUrl,
         });
       } else if (postId) {
         pendingClicks.push({
@@ -199,6 +223,7 @@
           adId,
           eventType,
           timestamp: ts,
+          landingUrl,
         });
         console.log("[CMN] ⏳ click queued waiting dbId:", { postId, eventType });
       } else {
@@ -229,28 +254,18 @@
 
       try {
         if (chrome?.runtime?.id) {
-          chrome.runtime
-            .sendMessage({
-              type: "mouseMove",
-              dbId: trackingId,
-              postId,
-              adId,
-              timeElapsed: getTimeElapsed(),
-              frames,
-              window: windowSnapshot,
-              lastAdPosition,
-              imagePosition,
-              timestamp: ts,
-            })
-            .then((resp) => {
-              console.log("[CMN] 🖱️ move sent:", {
-                dbId: trackingId,
-                response: resp || null,
-              });
-            })
-            .catch((err) => {
-              console.warn("[CMN] ⚠️ move send failed:", err?.message || String(err));
-            });
+          chrome.runtime.sendMessage({
+            type: "mouseMove",
+            dbId: trackingId,
+            postId,
+            adId,
+            timeElapsed: getTimeElapsed(),
+            frames,
+            window: windowSnapshot,
+            lastAdPosition,
+            imagePosition,
+            timestamp: ts,
+          });
         }
       } catch (_) {}
     },
