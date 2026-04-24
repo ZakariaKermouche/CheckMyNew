@@ -205,7 +205,6 @@
             const id =
               parsed?.top_level_post_id ||
               parsed?.top_level_post_id_for_top_level_comments ||
-              parsed?.content_owner_id_new ||
               null;
             if (id && /^\d{6,}$/.test(String(id))) return String(id);
           } catch (_) {
