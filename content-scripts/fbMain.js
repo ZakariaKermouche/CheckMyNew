@@ -795,6 +795,20 @@
       try {
         this.stats.graphqlPostsReceived++;
         const postId = post.post_id || post.id;
+        if (!postId) return;
+
+        const incomingAuthor =
+          post.author && typeof post.author === "object"
+            ? post.author
+            : post.author
+            ? { name: post.author }
+            : null;
+        const incomingTo =
+          post.to && typeof post.to === "object"
+            ? post.to
+            : post.to
+            ? { name: post.to }
+            : null;
 
         console.log("[CMN] 📥 GraphQL Post Received:", {
           postId,
@@ -805,30 +819,56 @@
         });
 
         if (this.postDetector.isProcessedGraphQL(postId)) {
-          console.log("[CMN] ⚠️  Post already processed:", postId);
+          const existing = this.graphqlPostsMap.get(postId);
+          if (existing) {
+            if (
+              (!existing.message || existing.message.length < 20) &&
+              typeof post.message === "string" &&
+              post.message.length > 0
+            ) {
+              existing.message = post.message;
+            }
+            if ((!existing.url || existing.url.length === 0) && post.url) {
+              existing.url = post.url;
+              existing.externalDomain = this.extractDomain(post.url);
+            }
+            if (!existing.author?.name && incomingAuthor?.name) {
+              existing.author = incomingAuthor;
+            }
+            if (!existing.to?.name && incomingTo?.name) {
+              existing.to = incomingTo;
+            }
+            if (
+              (!Array.isArray(existing.attachments) || existing.attachments.length === 0) &&
+              Array.isArray(post.attachments) &&
+              post.attachments.length > 0
+            ) {
+              existing.attachments = post.attachments;
+              existing.attachment_count = post.attachments.length;
+            }
+            if (!existing.ad && post.ad) {
+              existing.ad = post.ad;
+            }
+            if (!existing.ad_client_token && (post.ad?.client_token || post.ad_client_token)) {
+              existing.ad_client_token = post.ad?.client_token || post.ad_client_token;
+            }
+            existing.isSponsored = Boolean(existing.ad?.ad_id || existing.isSponsored);
+            this.applyPendingDomMatch(existing);
+            if (existing.visibleAt && !existing.queued) {
+              this.queuePostForSending(existing);
+            }
+          }
+          console.log("[CMN] ⚠️  Post already processed (merged update):", postId);
           return;
         }
 
         this.postDetector.markAsProcessedGraphQL(postId);
 
-        const author =
-          post.author && typeof post.author === "object"
-            ? post.author
-            : post.author
-            ? { name: post.author }
-            : null;
-        const to =
-          post.to && typeof post.to === "object"
-            ? post.to
-            : post.to
-            ? { name: post.to }
-            : null;
-
         const postData = {
           id: post.id || postId,
           post_id: postId,
-          author,
-          to,
+          author: incomingAuthor,
+          to: incomingTo,
           message: post.message,
           url: post.url,
           creation_time: post.creation_time,
@@ -869,6 +909,7 @@
         };
 
         this.graphqlPostsMap.set(postId, postData);
+        this.applyPendingDomMatch(postData);
         this.log("GraphQL post tracked", postId);
         this.stats.newsPostsCollected++;
       } catch (error) {
