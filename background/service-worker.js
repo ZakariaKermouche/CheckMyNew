@@ -441,7 +441,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: "no_consent" });
           return;
         }
-        const dbId = message.dbId || message.postId || message.adId || null;
+        const dbId = message.dbId || null;
+        const clickedUrl =
+          typeof message.landingUrl === "string" && message.landingUrl.trim()
+            ? message.landingUrl.trim()
+            : null;
+        const followedPageUrl =
+          (message.eventType || "") === "FollowPage" ? clickedUrl : null;
         if (!dbId) {
           sendResponse({ ok: false, skipped: true, error: "missing_tracking_id" });
           return;
@@ -454,6 +460,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           adanalyst_ad_id: null,
           user_id: state.CURRENT_USER_ID,
           type: message.eventType || "ImageClicked",
+          landing_url: clickedUrl,
+          followed_page_url: followedPageUrl,
+          url: clickedUrl,
         };
         try {
           const out = await postJSONWithRetry(
@@ -472,7 +481,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             post_id: message.postId || null,
             event_type: message.eventType || "ImageClicked",
             ts: message.timestamp || Date.now(),
-            url: message.url || null,
+            url: clickedUrl,
+            landing_url: clickedUrl,
+            followed_page_url: followedPageUrl,
           };
           try {
             const fallbackOut = await postJSONWithRetry(

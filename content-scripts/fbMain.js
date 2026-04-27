@@ -476,38 +476,38 @@
 
     buildRegisterAdPayload(postData) {
       if (!postData) return null;
-      const postId = postData.post_id || postData.id;
-
       const isSponsored = Boolean(
         postData.ad?.ad_id || postData.isSponsored || postData.sponsored
       );
-
+      const graphQlAdId = postData?.ad?.ad_id
+        ? String(postData.ad.ad_id)
+        : null;
       const isNewsPost = this.newsFilter?.isNewsPost
         ? this.newsFilter.isNewsPost(postData)
         : false;
-
       const isPublicPost =
         !isSponsored && !isNewsPost && !this.isPrivatePost(postData);
-
       if (!isSponsored && !isNewsPost && !isPublicPost) return null;
+      if (postData.source === "dom_fallback") return null;
+
+      const hasAuthor = Boolean(postData?.author?.name);
+      const hasUrl = Boolean(
+        typeof postData?.url === "string" && postData.url.trim().length > 0
+      );
+      if (!hasAuthor || !hasUrl) return null;
 
       const postType = isSponsored
         ? "frontAd"
         : isNewsPost
         ? "newsPost"
         : "publicPost";
-      const graphQlAdId = postData?.ad?.ad_id
-        ? String(postData.ad.ad_id)
-        : null;
       const postIdentifier = postData.post_id || postData.id || null;
       const normalizedPostIdentifier =
         typeof postIdentifier === "string" && /^\d{6,}$/.test(postIdentifier)
           ? postIdentifier
           : null;
       const stableBackendId = graphQlAdId || normalizedPostIdentifier;
-      if (!stableBackendId) {
-        return null;
-      }
+      if (!stableBackendId) return null;
       const htmlId = String(stableBackendId);
 
       const visibleFraction =
@@ -578,7 +578,7 @@
         video_id,
       };
 
-      if (isSponsored && landingPages.length > 0) {
+      if (landingPages.length > 0) {
         payload.landing_pages = landingPages;
       } else {
         payload.landing_pages = [];
@@ -596,12 +596,8 @@
             }
           })();
         payload.landing_domain = landingDomain;
-        payload.adanalyst_ad_id = htmlId;
       }
-
-      if (!isNewsPost) {
-        payload.adanalyst_ad_id = htmlId;
-      }
+      payload.adanalyst_ad_id = htmlId;
 
       return payload;
     }
@@ -1115,6 +1111,9 @@
             this.triggerExplanationFetch(postData);
           }
 
+        }
+
+        if (!postData.queued) {
           this.queuePostForSending(postData);
         }
       });
