@@ -488,6 +488,13 @@
       const isPublicPost =
         !isSponsored && !isNewsPost && !this.isPrivatePost(postData);
       if (!isSponsored && !isNewsPost && !isPublicPost) return null;
+      if (postData.source === "dom_fallback") return null;
+
+      const hasAuthor = Boolean(postData?.author?.name);
+      const hasUrl = Boolean(
+        typeof postData?.url === "string" && postData.url.trim().length > 0
+      );
+      if (!hasAuthor || !hasUrl) return null;
 
       const normalizedAuthor = postData?.author?.name
         ? postData.author
