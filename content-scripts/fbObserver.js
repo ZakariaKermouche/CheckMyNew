@@ -203,18 +203,22 @@ class FBObserver {
     if (!element || !element.querySelector) return false;
 
     const hasMessage = !!element.querySelector(
-      '[data-ad-rendering-role="story_message"], [data-ad-preview="message"], [data-ad-comet-preview="message"]'
+      '[data-ad-rendering-role="story_message"], [data-ad-preview="message"], [data-ad-comet-preview="message"], div[dir="auto"]'
     );
     const hasProfile = !!element.querySelector(
-      '[data-ad-rendering-role="profile_name"], [role="link"][href*="/profile.php"]'
+      '[data-ad-rendering-role="profile_name"], [role="link"][href*="/profile.php"], h2 a[role="link"], h3 a[role="link"], a[role="link"][href^="/"]'
     );
     const hasToolbar = !!element.querySelector(
       '[aria-label="Actions for this post"]'
     );
 
     const isArticle = element.getAttribute("role") === "article";
+    const hasEnoughText = (element.textContent?.trim()?.length || 0) > 20;
 
-    return hasProfile && (hasMessage || hasToolbar);
+    // Support older/newer feed variants:
+    // - marker-rich posts (profile+message/toolbar)
+    // - article cards with enough text and either a profile-like link or toolbar
+    return (hasProfile && (hasMessage || hasToolbar)) || (isArticle && hasEnoughText && (hasProfile || hasToolbar));
   }
 
   // Find post container from a marker element

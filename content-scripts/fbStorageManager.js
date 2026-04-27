@@ -23,6 +23,7 @@ class FBStorageManager {
 
   // Initialize
   init() {
+    this.ensureQueueStorageKey();
     // Load any unsent data from storage
     this.loadUnsentData();
 
@@ -31,6 +32,20 @@ class FBStorageManager {
 
     // Send on page unload
     this.setupUnloadHandler();
+  }
+
+  ensureQueueStorageKey() {
+    try {
+      if (chrome?.runtime?.id) {
+        chrome.storage.local.get([this.storageKey], (result) => {
+          if (chrome.runtime.lastError) return;
+          if (Array.isArray(result?.[this.storageKey])) return;
+          chrome.storage.local.set({ [this.storageKey]: [] }, () => {});
+        });
+      } else if (!localStorage.getItem(this.fallbackStorageKey)) {
+        localStorage.setItem(this.fallbackStorageKey, "[]");
+      }
+    } catch (_) {}
   }
 
   // Add post to queue
