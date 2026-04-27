@@ -1083,19 +1083,37 @@
 
           let fallback = this.graphqlPostsMap.get(fallbackPostId);
           if (!fallback) {
+            // Extract rich data from DOM element for fallback posts
+            const domAuthorName = this.extractProfileNameFromElement(postElement);
+            const domMessage = this.extractPostMessageFromElement(postElement);
+            const domProfileUrl = this.extractProfileUrlFromElement(postElement);
+            const domProfilePic = this.extractProfilePictureFromElement(postElement);
+            const domProfileId = this.extractProfileIdFromUrl(domProfileUrl);
+            const domLandingPages = this.extractLandingPagesFromElement(postElement);
+            const domImages = this.extractImagesFromElement(postElement);
+
             fallback = {
               id: fallbackPostId,
               post_id: fallbackPostId,
-              author: postData.author || null,
-              message: postData.message || null,
+              author: postData.author || (domAuthorName ? {
+                name: domAuthorName,
+                page: domProfileUrl,
+                profile_picture: domProfilePic,
+                id: domProfileId,
+              } : null),
+              message: postData.message || domMessage || null,
               to: postData.to || null,
+              url: domLandingPages[0] || postData.url || "",
+              attachments: postData.attachments || domImages.map((img) => ({
+                type: "Photo",
+                image: { flexible: img, large: img },
+              })) || [],
               source: "dom_fallback",
               detectedAt: Date.now(),
               inDOM: true,
               domFoundAt: Date.now(),
               isSponsored: this.postDetector.isSponsored(postElement),
               visibleDuration: [],
-              attachments: [],
             };
             this.graphqlPostsMap.set(fallbackPostId, fallback);
             this.registerFingerprint(fallback);
@@ -1108,6 +1126,46 @@
             }
             if (!fallback.to?.name && postData.to?.name) {
               fallback.to = { name: postData.to.name };
+            }
+            // Enrich fallback with DOM-extracted data if still missing
+            if (!fallback.author?.name || !fallback.author?.profile_picture) {
+              const domAuthorName = this.extractProfileNameFromElement(postElement);
+              const domProfileUrl = this.extractProfileUrlFromElement(postElement);
+              const domProfilePic = this.extractProfilePictureFromElement(postElement);
+              const domProfileId = this.extractProfileIdFromUrl(domProfileUrl);
+              if (domAuthorName && !fallback.author?.name) {
+                fallback.author = fallback.author || {};
+                fallback.author.name = domAuthorName;
+              }
+              if (domProfileUrl && !fallback.author?.page) {
+                fallback.author = fallback.author || {};
+                fallback.author.page = domProfileUrl;
+              }
+              if (domProfilePic && !fallback.author?.profile_picture) {
+                fallback.author = fallback.author || {};
+                fallback.author.profile_picture = domProfilePic;
+              }
+              if (domProfileId && !fallback.author?.id) {
+                fallback.author = fallback.author || {};
+                fallback.author.id = domProfileId;
+              }
+            }
+            if (!fallback.message) {
+              const domMessage = this.extractPostMessageFromElement(postElement);
+              if (domMessage) fallback.message = domMessage;
+            }
+            if (!fallback.url) {
+              const domLandingPages = this.extractLandingPagesFromElement(postElement);
+              if (domLandingPages[0]) fallback.url = domLandingPages[0];
+            }
+            if ((!fallback.attachments || fallback.attachments.length === 0)) {
+              const domImages = this.extractImagesFromElement(postElement);
+              if (domImages.length > 0) {
+                fallback.attachments = domImages.map((img) => ({
+                  type: "Photo",
+                  image: { flexible: img, large: img },
+                }));
+              }
             }
           }
 
