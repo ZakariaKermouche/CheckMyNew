@@ -3,6 +3,7 @@
 class FBPostDetector {
   constructor() {
     this.processedPosts = new Set();
+    this.processedPostSnapshots = new Map();
     this.processedGraphQLPosts = new Set(); // ✅ NEW: Separate set for GraphQL posts
     this.postIdCounter = 0;
   }
@@ -14,13 +15,21 @@ class FBPostDetector {
       return false;
     }
 
+    const snapshot = this.getElementSnapshot(postElement);
+
     // If it's a DOM element with dataset
-    if (postElement.dataset && postElement.dataset.cmnProcessed === "true") {
+    if (
+      postElement.dataset &&
+      postElement.dataset.cmnProcessed === "true" &&
+      postElement.dataset.cmnSnapshot === snapshot
+    ) {
       return true;
     }
 
     const postId = this.generatePostId(postElement);
-    return this.processedPosts.has(postId);
+    if (!this.processedPosts.has(postId)) return false;
+    const lastSnapshot = this.processedPostSnapshots.get(postId) || "";
+    return lastSnapshot === snapshot;
   }
 
   // Check if GraphQL post has been processed
@@ -38,10 +47,15 @@ class FBPostDetector {
 
     if (postElement.dataset) {
       postElement.dataset.cmnProcessed = "true";
+      postElement.dataset.cmnSnapshot = this.getElementSnapshot(postElement);
     }
 
     const postId = this.generatePostId(postElement);
     this.processedPosts.add(postId);
+    this.processedPostSnapshots.set(
+      postId,
+      postElement.dataset?.cmnSnapshot || this.getElementSnapshot(postElement)
+    );
   }
 
   // Mark GraphQL post as processed
@@ -71,6 +85,12 @@ class FBPostDetector {
     const textContent = element.textContent?.substring(0, 50) || "";
     const hash = this.hashCode(textContent);
     return `post_${hash}_${this.postIdCounter++}`;
+  }
+
+  getElementSnapshot(element) {
+    if (!element) return "";
+    const textContent = element.textContent?.replace(/\s+/g, " ").trim() || "";
+    return this.hashCode(textContent.slice(0, 250));
   }
 
   // Simple hash function
@@ -228,6 +248,12 @@ class FBPostDetector {
     if (this.processedPosts.size > maxCacheSize) {
       const toKeep = Array.from(this.processedPosts).slice(-500);
       this.processedPosts = new Set(toKeep);
+      const keepSet = new Set(toKeep);
+      for (const key of Array.from(this.processedPostSnapshots.keys())) {
+        if (!keepSet.has(key)) {
+          this.processedPostSnapshots.delete(key);
+        }
+      }
     }
 
     if (this.processedGraphQLPosts.size > maxCacheSize) {
