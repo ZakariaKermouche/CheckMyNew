@@ -205,7 +205,6 @@
             const id =
               parsed?.top_level_post_id ||
               parsed?.top_level_post_id_for_top_level_comments ||
-              parsed?.content_owner_id_new ||
               null;
             if (id && /^\d{6,}$/.test(String(id))) return String(id);
           } catch (_) {
@@ -220,6 +219,45 @@
         if (dataFtid) {
           const match = dataFtid.match(/(\d{6,})/);
           if (match?.[1]) return match[1];
+        }
+
+        // Try permalink-style anchors:
+        // /{page}/posts/{id}, /groups/{gid}/posts/{id}, /permalink/{id}, story_fbid={id}
+        const anchors = Array.from(element.querySelectorAll('a[href]'));
+        for (const a of anchors) {
+          const href = a.getAttribute("href") || "";
+          if (!href) continue;
+          const absolute = href.startsWith("http")
+            ? href
+            : `https://www.facebook.com${href.startsWith("/") ? href : `/${href}`}`;
+          let url;
+          try {
+            url = new URL(absolute);
+          } catch (_) {
+            continue;
+          }
+
+          const qStory = url.searchParams.get("story_fbid");
+          if (qStory && /^\d{6,}$/.test(qStory)) return qStory;
+          const qFbid = url.searchParams.get("fbid");
+          if (qFbid && /^\d{6,}$/.test(qFbid)) return qFbid;
+          const qMulti = url.searchParams.get("multi_permalinks");
+          if (qMulti) {
+            const mMulti = qMulti.match(/(\d{6,})/);
+            if (mMulti?.[1]) return mMulti[1];
+          }
+
+          const path = url.pathname || "";
+          const m =
+            path.match(/\/posts\/(\d{6,})/) ||
+            path.match(/\/permalink\/(\d{6,})/) ||
+            path.match(/\/videos\/(\d{6,})/);
+          if (m?.[1]) return m[1];
+
+          // Last resort: extract a large numeric token from full URL.
+          const rawUrl = `${url.pathname}${url.search}`;
+          const mAny = rawUrl.match(/(\d{10,})/);
+          if (mAny?.[1]) return mAny[1];
         }
       } catch (_) {}
 
@@ -255,13 +293,15 @@
     }
 
     generateAdAnalystId() {
-      const randomNum = Math.random().toString(36);
-      const timeSincePageLoad =
-        typeof performance !== "undefined"
-          ? performance.now().toString(36)
-          : "0";
-      const time = Date.now().toString(36);
-      return `AdAn${randomNum}${timeSincePageLoad}${time}`;
+      const randomDigits = Math.floor(Math.random() * 1e9)
+        .toString()
+        .padStart(9, "0");
+      const perfDigits = Math.floor(
+        typeof performance !== "undefined" ? performance.now() : 0
+      )
+        .toString()
+        .padStart(6, "0");
+      return `${Date.now()}${perfDigits}${randomDigits}`;
     }
 
     extractLandingPagesFromElement(element) {
@@ -436,34 +476,39 @@
 
     buildRegisterAdPayload(postData) {
       if (!postData) return null;
-      const postId = postData.post_id || postData.id;
-
       const isSponsored = Boolean(
         postData.ad?.ad_id || postData.isSponsored || postData.sponsored
       );
-
+      const graphQlAdId = postData?.ad?.ad_id
+        ? String(postData.ad.ad_id)
+        : null;
       const isNewsPost = this.newsFilter?.isNewsPost
         ? this.newsFilter.isNewsPost(postData)
         : false;
-
       const isPublicPost =
         !isSponsored && !isNewsPost && !this.isPrivatePost(postData);
-
       if (!isSponsored && !isNewsPost && !isPublicPost) return null;
+      if (postData.source === "dom_fallback") return null;
+
+      const hasAuthor = Boolean(postData?.author?.name);
+      const hasUrl = Boolean(
+        typeof postData?.url === "string" && postData.url.trim().length > 0
+      );
+      if (!hasAuthor || !hasUrl) return null;
 
       const postType = isSponsored
         ? "frontAd"
         : isNewsPost
         ? "newsPost"
         : "publicPost";
-      const graphQlAdId = postData?.ad?.ad_id
-        ? String(postData.ad.ad_id)
-        : null;
       const postIdentifier = postData.post_id || postData.id || null;
-      const htmlId =
-        postType === "publicPost"
-          ? String(postIdentifier || this.generateAdAnalystId())
-          : graphQlAdId || String(postIdentifier || this.generateAdAnalystId());
+      const normalizedPostIdentifier =
+        typeof postIdentifier === "string" && /^\d{6,}$/.test(postIdentifier)
+          ? postIdentifier
+          : null;
+      const stableBackendId = graphQlAdId || normalizedPostIdentifier;
+      if (!stableBackendId) return null;
+      const htmlId = String(stableBackendId);
 
       const visibleFraction =
         typeof postData?.visible_fraction === "number"
@@ -503,7 +548,7 @@
       const payload = {
         raw_ad: safeRawAd,
         html_ad_id: htmlId,
-        fb_id: postData.post_id || postData.id || null,
+        fb_id: String(normalizedPostIdentifier || graphQlAdId || htmlId),
         objId: isSponsored ? postData.id || null : null,
         visible: true,
         visible_fraction: visibleFraction,
@@ -533,7 +578,7 @@
         video_id,
       };
 
-      if (isSponsored && landingPages.length > 0) {
+      if (landingPages.length > 0) {
         payload.landing_pages = landingPages;
       } else {
         payload.landing_pages = [];
@@ -551,12 +596,8 @@
             }
           })();
         payload.landing_domain = landingDomain;
-        payload.adanalyst_ad_id = htmlId;
       }
-
-      if (!isNewsPost) {
-        payload.adanalyst_ad_id = htmlId;
-      }
+      payload.adanalyst_ad_id = htmlId;
 
       return payload;
     }
@@ -598,6 +639,10 @@
       postData.queued = true;
       if (!postData.register_ad_payload) {
         postData.register_ad_payload = this.buildRegisterAdPayload(postData);
+        if (!postData.register_ad_payload) {
+          postData.queued = false;
+          return false;
+        }
       }
       const prepared = this.preparePostForQueue(postData);
 
@@ -750,6 +795,20 @@
       try {
         this.stats.graphqlPostsReceived++;
         const postId = post.post_id || post.id;
+        if (!postId) return;
+
+        const incomingAuthor =
+          post.author && typeof post.author === "object"
+            ? post.author
+            : post.author
+            ? { name: post.author }
+            : null;
+        const incomingTo =
+          post.to && typeof post.to === "object"
+            ? post.to
+            : post.to
+            ? { name: post.to }
+            : null;
 
         console.log("[CMN] 📥 GraphQL Post Received:", {
           postId,
@@ -760,30 +819,56 @@
         });
 
         if (this.postDetector.isProcessedGraphQL(postId)) {
-          console.log("[CMN] ⚠️  Post already processed:", postId);
+          const existing = this.graphqlPostsMap.get(postId);
+          if (existing) {
+            if (
+              (!existing.message || existing.message.length < 20) &&
+              typeof post.message === "string" &&
+              post.message.length > 0
+            ) {
+              existing.message = post.message;
+            }
+            if ((!existing.url || existing.url.length === 0) && post.url) {
+              existing.url = post.url;
+              existing.externalDomain = this.extractDomain(post.url);
+            }
+            if (!existing.author?.name && incomingAuthor?.name) {
+              existing.author = incomingAuthor;
+            }
+            if (!existing.to?.name && incomingTo?.name) {
+              existing.to = incomingTo;
+            }
+            if (
+              (!Array.isArray(existing.attachments) || existing.attachments.length === 0) &&
+              Array.isArray(post.attachments) &&
+              post.attachments.length > 0
+            ) {
+              existing.attachments = post.attachments;
+              existing.attachment_count = post.attachments.length;
+            }
+            if (!existing.ad && post.ad) {
+              existing.ad = post.ad;
+            }
+            if (!existing.ad_client_token && (post.ad?.client_token || post.ad_client_token)) {
+              existing.ad_client_token = post.ad?.client_token || post.ad_client_token;
+            }
+            existing.isSponsored = Boolean(existing.ad?.ad_id || existing.isSponsored);
+            this.applyPendingDomMatch(existing);
+            if (existing.visibleAt && !existing.queued) {
+              this.queuePostForSending(existing);
+            }
+          }
+          console.log("[CMN] ⚠️  Post already processed (merged update):", postId);
           return;
         }
 
         this.postDetector.markAsProcessedGraphQL(postId);
 
-        const author =
-          post.author && typeof post.author === "object"
-            ? post.author
-            : post.author
-            ? { name: post.author }
-            : null;
-        const to =
-          post.to && typeof post.to === "object"
-            ? post.to
-            : post.to
-            ? { name: post.to }
-            : null;
-
         const postData = {
           id: post.id || postId,
           post_id: postId,
-          author,
-          to,
+          author: incomingAuthor,
+          to: incomingTo,
           message: post.message,
           url: post.url,
           creation_time: post.creation_time,
@@ -824,6 +909,7 @@
         };
 
         this.graphqlPostsMap.set(postId, postData);
+        this.applyPendingDomMatch(postData);
         this.log("GraphQL post tracked", postId);
         this.stats.newsPostsCollected++;
       } catch (error) {
@@ -899,12 +985,58 @@
             this.visibilityTracker.track(postElement, matchedPostId);
           }
         } else {
-          this.log("DOM fingerprint cached for later match", domFingerprint);
-          this.pendingDomByFingerprint.set(domFingerprint, {
-            element: postElement,
-            domFoundAt: Date.now(),
-            domMetadata,
-          });
+          // Fallback: still track DOM post even without GraphQL match.
+          // This prevents collection from stalling when Facebook virtualized
+          // feed updates do not yield parsable GraphQL payloads.
+          const fallbackPostId =
+            domPostId ||
+            `dom_${this.postDetector.generatePostId(postElement)}`;
+
+          let fallback = this.graphqlPostsMap.get(fallbackPostId);
+          if (!fallback) {
+            fallback = {
+              id: fallbackPostId,
+              post_id: fallbackPostId,
+              author: postData.author || null,
+              message: postData.message || null,
+              to: postData.to || null,
+              source: "dom_fallback",
+              detectedAt: Date.now(),
+              inDOM: true,
+              domFoundAt: Date.now(),
+              isSponsored: this.postDetector.isSponsored(postElement),
+              visibleDuration: [],
+              attachments: [],
+            };
+            this.graphqlPostsMap.set(fallbackPostId, fallback);
+            this.registerFingerprint(fallback);
+          } else {
+            fallback.inDOM = true;
+            fallback.domFoundAt = Date.now();
+            if (!fallback.message && postData.message) fallback.message = postData.message;
+            if (!fallback.author?.name && postData.author?.name) {
+              fallback.author = { name: postData.author.name };
+            }
+            if (!fallback.to?.name && postData.to?.name) {
+              fallback.to = { name: postData.to.name };
+            }
+          }
+
+          this.domElementByPostId.set(fallbackPostId, postElement);
+          if (this.visibilityTracker) {
+            this.visibilityTracker.track(postElement, fallbackPostId);
+          }
+
+          this.log("DOM fallback tracked without GraphQL match", fallbackPostId);
+
+          // Keep pending mapping too in case a GraphQL match arrives later.
+          if (domFingerprint) {
+            this.pendingDomByFingerprint.set(domFingerprint, {
+              element: postElement,
+              domFoundAt: Date.now(),
+              domMetadata,
+            });
+          }
         }
 
         this.postDetector.markAsProcessed(postElement);
@@ -1020,6 +1152,9 @@
             this.triggerExplanationFetch(postData);
           }
 
+        }
+
+        if (!postData.queued) {
           this.queuePostForSending(postData);
         }
       });
@@ -1256,7 +1391,7 @@
         if (!postId) return;
 
         const postData = this.graphqlPostsMap.get(postId);
-        if (!postData || !postData.isSponsored) return;
+        if (!postData) return;
 
         const startedTs = detail.started_ts || postData.visibleAt || null;
         const endTs = detail.end_ts || null;
@@ -1276,10 +1411,11 @@
           });
         }
 
-        this.storageManager.updatePost(postData.id, {
+        this.storageManager.updatePost(postData.id || postData.post_id, {
           visibleDuration: postData.visibleDuration,
         });
 
+        if (!postData.isSponsored) return;
         const dbId = postData.dbId || null;
         if (!dbId) return;
 

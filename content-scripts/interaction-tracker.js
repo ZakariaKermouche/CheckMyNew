@@ -5,9 +5,12 @@
 
   const CLICK_THROTTLE_MS = 300;
   const MOVE_THROTTLE_MS = 1000;
+  const RETRY_INTERVAL_MS = 2000;
+  const MAX_RETRY_AGE_MS = 30000;
 
   let lastClick = 0;
   let lastMove = 0;
+  const pendingClicks = [];
 
   function nowMs() {
     return Date.now();
@@ -41,19 +44,62 @@
     };
   }
 
-  function inferClickType(target) {
+  function getClickedUrl(target) {
+    const anchor = target?.closest?.("a[href]");
+    if (!anchor) return null;
+    const href = anchor.getAttribute("href") || anchor.href || null;
+    if (!href) return null;
+    try {
+      return new URL(href, window.location.origin).href;
+    } catch (_) {
+      return href;
+    }
+  }
+
+  function inferClickType(target, clickedUrl = null) {
     const text = (target?.textContent || "").trim().toLowerCase();
+    const aria = (
+      target?.getAttribute?.("aria-label") ||
+      target?.closest?.("[aria-label]")?.getAttribute?.("aria-label") ||
+      ""
+    ).toLowerCase();
+    const probe = `${text} ${aria}`;
+    if (
+      probe.includes("follow") ||
+      probe.includes("suivre") ||
+      probe.includes("abonner")
+    ) {
+      return "FollowPage";
+    }
+    if (clickedUrl) return "VisitingLandingURL";
+    if (probe.includes("comment")) return "CommentButtonClick";
+    if (probe.includes("share")) return "Share";
+    if (probe.includes("like") || probe.includes("j’aime") || probe.includes("j'aime")) return "Like";
+    if (probe.includes("love")) return "Love";
+    if (probe.includes("haha")) return "Haha";
+    if (probe.includes("wow")) return "Wow";
+    if (probe.includes("care")) return "Care";
+    if (probe.includes("sad")) return "Sad";
+    if (probe.includes("angry")) return "Angry";
+    if (probe.includes("react")) return "Reaction";
     if (target?.closest?.("img")) return "ImageClicked";
-    if (text.includes("comment")) return "CommentButtonClick";
-    if (text.includes("share")) return "Share";
-    if (text.includes("like")) return "Like";
-    if (text.includes("love")) return "Love";
-    if (text.includes("haha")) return "Haha";
-    if (text.includes("wow")) return "Wow";
-    if (text.includes("care")) return "Care";
-    if (text.includes("sad")) return "Sad";
-    if (text.includes("angry")) return "Angry";
     return "ImageClicked";
+  }
+
+  function resolvePostDataByElement(cmn, target, maxDepth = 10) {
+    let el = target instanceof HTMLElement ? target : target?.parentElement;
+    for (let i = 0; el && i < maxDepth; i += 1) {
+      for (const [mapPostId, mapEl] of cmn?.domElementByPostId || []) {
+        if (
+          mapEl &&
+          (mapEl === el || (typeof mapEl.contains === "function" && mapEl.contains(el)))
+        ) {
+          return cmn.graphqlPostsMap?.get(mapPostId) || null;
+        }
+      }
+      el = el.parentElement;
+    }
+    return null;
   }
 
   function getPostContextFromTarget(target) {
@@ -75,6 +121,12 @@
     if (postId && cmn.graphqlPostsMap instanceof Map) {
       postData = cmn.graphqlPostsMap.get(postId) || null;
     }
+    if (!postData) {
+      postData = resolvePostDataByElement(cmn, target);
+      if (postData && !postId) {
+        postId = postData.post_id || postData.id || null;
+      }
+    }
 
     return {
       postId,
@@ -85,6 +137,65 @@
     };
   }
 
+  function sendClickEvent({ dbId, eventType, postId, adId, timestamp, landingUrl = null }) {
+    try {
+      if (!chrome?.runtime?.id) return;
+      chrome.runtime
+        .sendMessage({
+          type: "mouseClick",
+          dbId,
+          eventType,
+          postId,
+          adId,
+          timestamp,
+          landingUrl,
+        })
+        .then((resp) => {
+          console.log("[CMN] 🖱️ click sent:", {
+            dbId,
+            postId,
+            eventType,
+            response: resp || null,
+          });
+        })
+        .catch((err) => {
+          console.warn("[CMN] ⚠️ click send failed:", err?.message || String(err));
+        });
+    } catch (_) {}
+  }
+
+  function resolveTrackingId({ dbId, postId, adId }) {
+    if (!dbId) return null;
+    return String(dbId);
+  }
+
+  function flushPendingClicks() {
+    if (pendingClicks.length === 0) return;
+    const now = nowMs();
+    const keep = [];
+    for (const ev of pendingClicks) {
+      if (now - ev.timestamp > MAX_RETRY_AGE_MS) {
+        continue;
+      }
+      const { dbId, postId, adId } = getPostContextFromTarget(ev.target);
+      const trackingId = resolveTrackingId({ dbId, postId, adId });
+      if (trackingId) {
+        sendClickEvent({
+          dbId: trackingId,
+          eventType: ev.eventType,
+          postId: ev.postId,
+          adId: ev.adId,
+          timestamp: ev.timestamp,
+          landingUrl: ev.landingUrl || null,
+        });
+      } else {
+        keep.push(ev);
+      }
+    }
+    pendingClicks.length = 0;
+    pendingClicks.push(...keep);
+  }
+
   document.addEventListener(
     "click",
     (event) => {
@@ -93,22 +204,31 @@
       lastClick = ts;
 
       const { postId, adId, dbId } = getPostContextFromTarget(event.target);
-      if (!dbId) return;
-
-      try {
-        if (chrome?.runtime?.id) {
-          chrome.runtime
-            .sendMessage({
-              type: "mouseClick",
-              dbId,
-              eventType: inferClickType(event.target),
-              postId,
-              adId,
-              timestamp: ts,
-            })
-            .catch(() => {});
-        }
-      } catch (_) {}
+      const landingUrl = getClickedUrl(event.target);
+      const eventType = inferClickType(event.target, landingUrl);
+      const trackingId = resolveTrackingId({ dbId, postId, adId });
+      if (trackingId) {
+        sendClickEvent({
+          dbId: trackingId,
+          eventType,
+          postId,
+          adId,
+          timestamp: ts,
+          landingUrl,
+        });
+      } else if (postId) {
+        pendingClicks.push({
+          target: event.target,
+          postId,
+          adId,
+          eventType,
+          timestamp: ts,
+          landingUrl,
+        });
+        console.log("[CMN] ⏳ click queued waiting dbId:", { postId, eventType });
+      } else {
+        console.warn("[CMN] ⚠️ click skipped: no trackable post/ad context");
+      }
     },
     true
   );
@@ -119,9 +239,10 @@
       const ts = nowMs();
       if (ts - lastMove < MOVE_THROTTLE_MS) return;
       lastMove = ts;
-      const { dbId, adId, lastAdPosition, imagePosition } =
+      const { dbId, adId, postId, lastAdPosition, imagePosition } =
         getPostContextFromTarget(event.target);
-      if (!dbId) return;
+      const trackingId = resolveTrackingId({ dbId, postId, adId });
+      if (!trackingId) return;
       const windowSnapshot = getWindowSnapshot();
       const frames = [
         {
@@ -133,21 +254,23 @@
 
       try {
         if (chrome?.runtime?.id) {
-          chrome.runtime
-            .sendMessage({
-              type: "mouseMove",
-              dbId,
-              timeElapsed: getTimeElapsed(),
-              frames,
-              window: windowSnapshot,
-              lastAdPosition,
-              imagePosition,
-              timestamp: ts,
-            })
-            .catch(() => {});
+          chrome.runtime.sendMessage({
+            type: "mouseMove",
+            dbId: trackingId,
+            postId,
+            adId,
+            timeElapsed: getTimeElapsed(),
+            frames,
+            window: windowSnapshot,
+            lastAdPosition,
+            imagePosition,
+            timestamp: ts,
+          });
         }
       } catch (_) {}
     },
     { passive: true }
   );
+
+  setInterval(flushPendingClicks, RETRY_INTERVAL_MS);
 })();
