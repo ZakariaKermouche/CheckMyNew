@@ -328,6 +328,64 @@
       return null;
     }
 
+    // Extract post permalink URL from post element
+    extractPostUrlFromElement(element) {
+      if (!element) return null;
+
+      // Look for permalink anchors in the post
+      const anchors = Array.from(element.querySelectorAll('a[href]'));
+      for (const a of anchors) {
+        const href = a.getAttribute('href') || '';
+        if (!href) continue;
+
+        // Check if this looks like a post permalink
+        const absolute = href.startsWith('http')
+          ? href
+          : `https://www.facebook.com${href.startsWith('/') ? href : `/${href}`}`;
+        
+        let url;
+        try {
+          url = new URL(absolute);
+        } catch (_) {
+          continue;
+        }
+
+        // Match patterns: /posts/{id}, /permalink/{id}, /videos/{id}, story_fbid={id}
+        const path = url.pathname || '';
+        const hasPermalinkPattern = 
+          path.match(/\/posts\/\d+/) ||
+          path.match(/\/permalink\/\d+/) ||
+          path.match(/\/videos\/\d+/) ||
+          path.match(/\/photos\/\d+/) ||
+          url.searchParams.get('story_fbid');
+
+        if (hasPermalinkPattern) {
+          // Ensure it's a post-related link (not just any link in the post)
+          const text = a.textContent || '';
+          const ariaLabel = a.getAttribute('aria-label') || '';
+          const role = a.getAttribute('role') || '';
+          
+          // Permalink links often have specific characteristics
+          if (
+            role === 'link' && (ariaLabel.includes('Full story') || ariaLabel.includes('See more') || ariaLabel.includes('Open')) ||
+            text.match(/^\d{1,2}[hmd]\b/) || // Time indicators like "2h", "3m"
+            a.closest('[data-testid="post_header"]') ||
+            a.closest('[role="article"]')?.querySelector('[data-testid="post_message"]')?.contains(a) === false
+          ) {
+            return url.href;
+          }
+        }
+      }
+
+      // Fallback: construct URL from post ID if found
+      const postId = this.extractPostIdFromElement(element);
+      if (postId) {
+        return `https://www.facebook.com/${postId}`;
+      }
+
+      return null;
+    }
+
     // Extract Facebook ID from profile URL
     extractProfileIdFromUrl(url) {
       if (!url) return null;
@@ -522,6 +580,36 @@
       return [...urls].filter(Boolean);
     }
 
+    // Extract images from attachments in a format matching the expected raw_ad structure
+    extractAttachmentsFromPostData(postData) {
+      const attachments = [];
+      const sourceAttachments = Array.isArray(postData?.attachments)
+        ? postData.attachments
+        : [];
+      
+      for (const att of sourceAttachments) {
+        if (!att) continue;
+        
+        const attachment = {
+          type: att.type || "Photo",
+          id: att.id || null,
+          image: {
+            flexible: att.image?.flexible || null,
+            large: att.image?.large || null,
+            width: att.image?.width || null,
+            height: att.image?.height || null,
+          },
+          title: att.title || null,
+          destination_url: att.destination_url || null,
+          fbclid: att.fbclid || null,
+          action_links: Array.isArray(att.action_links) ? att.action_links : [],
+        };
+        attachments.push(attachment);
+      }
+      
+      return attachments;
+    }
+
     extractGraphqlVideos(postData) {
       const out = [];
       const graphqlVideos = Array.isArray(postData?.videos)
@@ -631,6 +719,9 @@
 
       const advertiser = this.extractAdvertiserInfoFromElement(null, postData);
 
+      // Extract attachments in the proper format for raw_ad
+      const formattedAttachments = this.extractAttachmentsFromPostData(postData);
+
       const maxRawAdLength = 30000;
       const rawAdGraphQL =
         typeof postData?.raw_ad === "string"
@@ -643,9 +734,7 @@
               message: postData.message || "",
               url: postData.url || "",
               author: postData.author || null,
-              attachments: Array.isArray(postData.attachments)
-                ? postData.attachments
-                : [],
+              attachments: formattedAttachments,
               ad: postData.ad || null,
             });
       const safeRawAd =
@@ -1089,8 +1178,25 @@
             const domProfileUrl = this.extractProfileUrlFromElement(postElement);
             const domProfilePic = this.extractProfilePictureFromElement(postElement);
             const domProfileId = this.extractProfileIdFromUrl(domProfileUrl);
+            const domPostUrl = this.extractPostUrlFromElement(postElement);
             const domLandingPages = this.extractLandingPagesFromElement(postElement);
             const domImages = this.extractImagesFromElement(postElement);
+
+            // Build attachments array in the expected format
+            const domAttachments = domImages.map((img) => ({
+              type: "Photo",
+              id: null,
+              image: {
+                flexible: img,
+                large: img,
+                width: null,
+                height: null,
+              },
+              title: null,
+              destination_url: null,
+              fbclid: null,
+              action_links: [],
+            }));
 
             fallback = {
               id: fallbackPostId,
@@ -1100,14 +1206,14 @@
                 page: domProfileUrl,
                 profile_picture: domProfilePic,
                 id: domProfileId,
+                type: "User",
               } : null),
               message: postData.message || domMessage || null,
               to: postData.to || null,
-              url: domLandingPages[0] || postData.url || "",
-              attachments: postData.attachments || domImages.map((img) => ({
-                type: "Photo",
-                image: { flexible: img, large: img },
-              })) || [],
+              url: domPostUrl || domLandingPages[0] || postData.url || "",
+              attachments: postData.attachments && postData.attachments.length > 0 
+                ? postData.attachments 
+                : domAttachments,
               source: "dom_fallback",
               detectedAt: Date.now(),
               inDOM: true,
@@ -1149,21 +1255,37 @@
                 fallback.author = fallback.author || {};
                 fallback.author.id = domProfileId;
               }
+              // Add type field if not present
+              if (!fallback.author?.type) {
+                fallback.author.type = "User";
+              }
             }
             if (!fallback.message) {
               const domMessage = this.extractPostMessageFromElement(postElement);
               if (domMessage) fallback.message = domMessage;
             }
             if (!fallback.url) {
+              const domPostUrl = this.extractPostUrlFromElement(postElement);
               const domLandingPages = this.extractLandingPagesFromElement(postElement);
-              if (domLandingPages[0]) fallback.url = domLandingPages[0];
+              if (domPostUrl) fallback.url = domPostUrl;
+              else if (domLandingPages[0]) fallback.url = domLandingPages[0];
             }
             if ((!fallback.attachments || fallback.attachments.length === 0)) {
               const domImages = this.extractImagesFromElement(postElement);
               if (domImages.length > 0) {
                 fallback.attachments = domImages.map((img) => ({
                   type: "Photo",
-                  image: { flexible: img, large: img },
+                  id: null,
+                  image: { 
+                    flexible: img, 
+                    large: img,
+                    width: null,
+                    height: null,
+                  },
+                  title: null,
+                  destination_url: null,
+                  fbclid: null,
+                  action_links: [],
                 }));
               }
             }
