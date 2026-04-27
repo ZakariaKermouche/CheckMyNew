@@ -17,6 +17,18 @@ async function postJSON(url, bodyObj) {
   return res.json();
 }
 
+function extractBackendDbId(out) {
+  return (
+    out?.ad_id ||
+    out?.id ||
+    out?.dbId ||
+    out?.adId ||
+    out?.inserted_id ||
+    out?.insertId ||
+    null
+  );
+}
+
 const REGISTER_AD_REQUIRED_BASE = ["type", "timestamp", "raw_ad", "user_id"];
 const REGISTER_AD_REQUIRED_BY_TYPE = {
   frontAd: [
@@ -197,7 +209,7 @@ export async function handleFrontAd(state, URLS_SERVER, message, sendResponse) {
     // 4) Reply to content script
     sendResponse?.({
       saved: resp.status !== "FAILURE",
-      dbId: resp.ad_id || null,
+      dbId: extractBackendDbId(resp),
     });
   } catch (e) {
     sendResponse?.({ saved: false, error: e.toString() });
@@ -239,7 +251,7 @@ export async function handleSideAd(state, URLS_SERVER, message, sendResponse) {
 
     sendResponse?.({
       saved: resp.status !== "FAILURE",
-      dbId: resp.ad_id || null,
+      dbId: extractBackendDbId(resp),
     });
   } catch (e) {
     sendResponse?.({ saved: false, error: e.toString() });
@@ -322,7 +334,36 @@ export async function handleRegisterAdBatch(
 
     let success = 0;
     const mappings = [];
-    for (const payload of payloads) {
+    const failedAdIds = [];
+    const failedIndices = [];
+    const droppedIndices = [];
+    for (let idx = 0; idx < payloads.length; idx += 1) {
+      const payload = payloads[idx];
+      let adanalystAdId =
+        payload?.adanalyst_ad_id || payload?.html_ad_id || null;
+      if (
+        adanalystAdId != null &&
+        !/^\d{6,}$/.test(String(adanalystAdId))
+      ) {
+        const fbIdFallback = payload?.fb_id ? String(payload.fb_id) : null;
+        if (fbIdFallback && /^\d{6,}$/.test(fbIdFallback)) {
+          adanalystAdId = fbIdFallback;
+          payload.adanalyst_ad_id = fbIdFallback;
+          payload.html_ad_id = fbIdFallback;
+          console.log("[CMN] Replaced non-numeric ad id with fb_id fallback:", {
+            idx,
+            adanalyst_ad_id: fbIdFallback,
+          });
+        } else {
+        console.warn("[CMN] Dropping payload with non-numeric ad id:", {
+          idx,
+          adanalyst_ad_id: adanalystAdId,
+          type: payload?.type || null,
+        });
+        droppedIndices.push(idx);
+        continue;
+        }
+      }
       // media_content comes only from attachment-derived urls.
       const images = Array.isArray(payload.attachment_media_urls)
         ? payload.attachment_media_urls.filter(Boolean)
@@ -345,21 +386,51 @@ export async function handleRegisterAdBatch(
       validateAndLogRegisterAdPayload(requestPayload);
       try {
         const out = await postJSON(URLS_SERVER.registerAd, requestForServer);
+        const status = String(out?.status || "").toLowerCase();
+        console.log("[CMN] registerAd response:", {
+          status: out?.status || null,
+          ad_id: out?.ad_id || null,
+          reason: out?.reason || null,
+          adanalyst_ad_id: adanalystAdId,
+        });
+        if (!out || status === "failure") {
+          if (adanalystAdId) failedAdIds.push(String(adanalystAdId));
+          failedIndices.push(idx);
+          continue;
+        }
         success++;
-        const dbId = out?.ad_id || null;
-        const adanalystAdId =
-          payload?.adanalyst_ad_id || payload?.html_ad_id || null;
+        const dbId = extractBackendDbId(out);
         if (dbId && adanalystAdId) {
           mappings.push({
             adanalyst_ad_id: String(adanalystAdId),
             dbId: String(dbId),
           });
+        } else if (!dbId) {
+          console.warn("[CMN] registerAd success without db id field:", {
+            adanalyst_ad_id: adanalystAdId,
+            keys: Object.keys(out || {}),
+          });
         }
       } catch (e) {
+        console.error("[CMN] registerAd failed:", {
+          error: e?.message || String(e),
+          adanalyst_ad_id: adanalystAdId,
+          type: payload?.type || null,
+        });
+        if (adanalystAdId) failedAdIds.push(String(adanalystAdId));
+        failedIndices.push(idx);
       }
     }
 
-    sendResponse?.({ ok: true, count: success, mappings });
+    sendResponse?.({
+      ok: true,
+      count: success,
+      total: payloads.length,
+      mappings,
+      failedAdIds,
+      failedIndices,
+      droppedIndices,
+    });
   } catch (e) {
     sendResponse?.({ ok: false, error: e.toString() });
   }

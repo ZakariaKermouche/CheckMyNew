@@ -28,8 +28,10 @@ class FBObserver {
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
     this.initialScanTimer = null;
+    this.periodicScanTimer = null;
     // Delay initial DOM scan slightly so bootstrap/GraphQL caches can warm up.
     this.initialScanDelayMs = 1500;
+    this.periodicScanIntervalMs = 3000;
   }
 
   // Find the main feed container
@@ -69,6 +71,14 @@ class FBObserver {
       if (this.isObserving) this.processExistingPosts();
       this.initialScanTimer = null;
     }, this.initialScanDelayMs);
+
+    // Facebook feed virtualization can recycle existing DOM nodes without
+    // always emitting useful childList mutations. Periodic rescans catch
+    // those updates so tracking does not stall after the first posts.
+    this.periodicScanTimer = setInterval(() => {
+      if (!this.isObserving) return;
+      this.processExistingPosts();
+    }, this.periodicScanIntervalMs);
   }
 
   // Stop observing
@@ -80,6 +90,10 @@ class FBObserver {
     if (this.initialScanTimer) {
       clearTimeout(this.initialScanTimer);
       this.initialScanTimer = null;
+    }
+    if (this.periodicScanTimer) {
+      clearInterval(this.periodicScanTimer);
+      this.periodicScanTimer = null;
     }
     this.isObserving = false;
   }
@@ -170,6 +184,14 @@ class FBObserver {
     markers.forEach((marker) => {
       const post = this.findPostContainerFromMarker(marker);
       if (post && this.isValidPostElement(post)) posts.push(post);
+    });
+
+    // Fallback for feed variants where marker attributes are missing.
+    const articleCandidates = container.querySelectorAll('div[role="article"]');
+    articleCandidates.forEach((article) => {
+      if (this.isPostElement(article) && this.isValidPostElement(article)) {
+        posts.push(article);
+      }
     });
 
     const deduped = [...new Set(posts)];
