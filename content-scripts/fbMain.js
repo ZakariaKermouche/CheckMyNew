@@ -292,6 +292,114 @@
       return messageEl?.textContent?.trim() || null;
     }
 
+    // Extract profile URL from post element (author profile link)
+    extractProfileUrlFromElement(element) {
+      if (!element) return null;
+
+      // Look for profile links in post header (common FB patterns)
+      const profileLinks = element.querySelectorAll('a[href]');
+      for (const link of profileLinks) {
+        const href = link.getAttribute('href') || '';
+        
+        // Match profile, user page, or groups patterns
+        if (
+          href.includes('/profile.php?id=') ||
+          href.match(/^\/[a-z0-9.]+(\?|$)/) || // /{username}
+          href.includes('facebook.com/') ||
+          href.match(/\/pages\/[\w-]+\//) // Pages
+        ) {
+          // Only take if it's likely a profile (check it's in header area)
+          const rect = link.getBoundingClientRect();
+          // Profile link should be near top of post
+          if (rect.top >= element.getBoundingClientRect().top &&
+              rect.top <= element.getBoundingClientRect().top + 150) {
+            try {
+              const fullUrl = href.startsWith('http') 
+                ? href 
+                : `https://www.facebook.com${href}`;
+              return new URL(fullUrl).href;
+            } catch (_) {
+              continue;
+            }
+          }
+        }
+      }
+      
+      return null;
+    }
+
+    // Extract Facebook ID from profile URL
+    extractProfileIdFromUrl(url) {
+      if (!url) return null;
+
+      try {
+        const urlObj = new URL(url);
+        
+        // Pattern 1: /profile.php?id=123
+        const idParam = urlObj.searchParams.get('id');
+        if (idParam && /^\d+$/.test(idParam)) {
+          return idParam;
+        }
+        
+        // Pattern 2: /pages/name/123
+        const pathMatch = urlObj.pathname.match(/\/pages\/[\w-]+\/(\d+)/);
+        if (pathMatch?.[1]) {
+          return pathMatch[1];
+        }
+        
+        // Pattern 3: Standard pattern fbid
+        const fbidMatch = urlObj.searchParams.get('fbid');
+        if (fbidMatch && /^\d+$/.test(fbidMatch)) {
+          return fbidMatch;
+        }
+      } catch (_) {
+        // Fall back to regex
+        const regexMatch = url.match(/(?:id|fbid)=(\d+)/);
+        if (regexMatch?.[1]) {
+          return regexMatch[1];
+        }
+      }
+      
+      return null;
+    }
+
+    // Extract profile picture from post element
+    extractProfilePictureFromElement(element) {
+      if (!element) return null;
+
+      // Look for avatar images (typically in post header)
+      // Facebook uses img with specific patterns for profile pictures
+      const imgs = element.querySelectorAll('img[src]');
+      for (const img of imgs) {
+        const src = img.getAttribute('src') || '';
+        const alt = img.getAttribute('alt') || '';
+        
+        // Profile pictures often have certain src patterns
+        if (
+          src.includes('scontent') && src.includes('profile') ||
+          src.match(/\/t[\d.]+x[\d.]+\//) || // Thumbnail pattern
+          alt.match(/^[A-Z]/) // Alt text starts with capital (likely name)
+        ) {
+          const rect = img.getBoundingClientRect();
+          // Avatar should be near top and small
+          if (rect.width < 100 && rect.height < 100 &&
+              rect.top >= element.getBoundingClientRect().top &&
+              rect.top <= element.getBoundingClientRect().top + 150) {
+            return src;
+          }
+        }
+      }
+
+      // Fallback: look for images with role="img"
+      const roleImg = element.querySelector('img[role="img"]');
+      if (roleImg) {
+        const src = roleImg.getAttribute('src');
+        if (src) return src;
+      }
+
+      return null;
+    }
+
     generateAdAnalystId() {
       const randomDigits = Math.floor(Math.random() * 1e9)
         .toString()
@@ -897,10 +1005,28 @@
 
         this.log("DOM fingerprint detected", domFingerprint);
 
+        // Build author object with enriched profile data
+        let authorData = null;
+        if (domMetadata.authorName) {
+          authorData = { name: domMetadata.authorName };
+          // Try to extract profile URL and ID from DOM
+          const profileUrl = this.extractProfileUrlFromElement(postElement);
+          if (profileUrl) {
+            authorData.page = profileUrl;
+            const profileId = this.extractProfileIdFromUrl(profileUrl);
+            if (profileId) {
+              authorData.id = profileId;
+            }
+          }
+          // Try to extract profile picture
+          const profilePic = this.extractProfilePictureFromElement(postElement);
+          if (profilePic) {
+            authorData.profile_picture = profilePic;
+          }
+        }
+
         const postData = {
-          author: domMetadata.authorName
-            ? { name: domMetadata.authorName }
-            : null,
+          author: authorData,
           message: domMetadata.message,
           to: domMetadata.groupName ? { name: domMetadata.groupName } : null,
           source: "dom",
@@ -978,7 +1104,7 @@
             fallback.domFoundAt = Date.now();
             if (!fallback.message && postData.message) fallback.message = postData.message;
             if (!fallback.author?.name && postData.author?.name) {
-              fallback.author = { name: postData.author.name };
+              fallback.author = postData.author;
             }
             if (!fallback.to?.name && postData.to?.name) {
               fallback.to = { name: postData.to.name };
