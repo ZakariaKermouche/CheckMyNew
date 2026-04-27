@@ -496,6 +496,12 @@
       );
       if (!hasAuthor || !hasUrl) return null;
 
+      const normalizedAuthor = postData?.author?.name
+        ? postData.author
+        : postData?.to?.name
+        ? { name: postData.to.name }
+        : { name: "Unknown" };
+
       const postType = isSponsored
         ? "frontAd"
         : isNewsPost
@@ -506,9 +512,22 @@
         typeof postIdentifier === "string" && /^\d{6,}$/.test(postIdentifier)
           ? postIdentifier
           : null;
-      const stableBackendId = graphQlAdId || normalizedPostIdentifier;
-      if (!stableBackendId) return null;
+      const fallbackNumericId = this.generateStableNumericId(
+        [
+          postIdentifier || "",
+          postData?.message || "",
+          postData?.url || "",
+          postData?.author?.name || "",
+        ].join("|")
+      );
+      const stableBackendId = graphQlAdId || normalizedPostIdentifier || fallbackNumericId;
       const htmlId = String(stableBackendId);
+      const resolvedUrl =
+        typeof postData?.url === "string" && postData.url.trim().length > 0
+          ? postData.url.trim()
+          : normalizedPostIdentifier
+          ? `https://www.facebook.com/permalink.php?story_fbid=${normalizedPostIdentifier}`
+          : "";
 
       const visibleFraction =
         typeof postData?.visible_fraction === "number"
@@ -533,8 +552,8 @@
               post_id: postData.post_id || null,
               id: postData.id || null,
               message: postData.message || "",
-              url: postData.url || "",
-              author: postData.author || null,
+              url: resolvedUrl,
+              author: normalizedAuthor,
               attachments: Array.isArray(postData.attachments)
                 ? postData.attachments
                 : [],
@@ -548,7 +567,7 @@
       const payload = {
         raw_ad: safeRawAd,
         html_ad_id: htmlId,
-        fb_id: String(normalizedPostIdentifier || graphQlAdId || htmlId),
+        fb_id: String(normalizedPostIdentifier || graphQlAdId || fallbackNumericId),
         objId: isSponsored ? postData.id || null : null,
         visible: true,
         visible_fraction: visibleFraction,
@@ -610,6 +629,16 @@
         hash |= 0;
       }
       return Math.abs(hash).toString(36);
+    }
+
+    generateStableNumericId(seedInput) {
+      const seed = String(seedInput || "");
+      let hash = 0;
+      for (let i = 0; i < seed.length; i++) {
+        hash = (hash * 31 + seed.charCodeAt(i)) % 1000000000000;
+      }
+      const numeric = Math.abs(hash);
+      return String(numeric).padStart(6, "0");
     }
 
     preparePostForQueue(postData) {
