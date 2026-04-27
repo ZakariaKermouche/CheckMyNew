@@ -502,6 +502,12 @@
         ? { name: postData.to.name }
         : { name: "Unknown" };
 
+      const normalizedAuthor = postData?.author?.name
+        ? postData.author
+        : postData?.to?.name
+        ? { name: postData.to.name }
+        : { name: "Unknown" };
+
       const postType = isSponsored
         ? "frontAd"
         : isNewsPost

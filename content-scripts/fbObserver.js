@@ -186,6 +186,14 @@ class FBObserver {
       if (post && this.isValidPostElement(post)) posts.push(post);
     });
 
+    // Fallback for feed variants where marker attributes are missing.
+    const articleCandidates = container.querySelectorAll('div[role="article"]');
+    articleCandidates.forEach((article) => {
+      if (this.isPostElement(article) && this.isValidPostElement(article)) {
+        posts.push(article);
+      }
+    });
+
     const deduped = [...new Set(posts)];
     return deduped;
   }
