@@ -28,8 +28,10 @@ class FBObserver {
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
     this.initialScanTimer = null;
+    this.periodicScanTimer = null;
     // Delay initial DOM scan slightly so bootstrap/GraphQL caches can warm up.
     this.initialScanDelayMs = 1500;
+    this.periodicScanIntervalMs = 3000;
   }
 
   // Find the main feed container
@@ -69,6 +71,14 @@ class FBObserver {
       if (this.isObserving) this.processExistingPosts();
       this.initialScanTimer = null;
     }, this.initialScanDelayMs);
+
+    // Facebook feed virtualization can recycle existing DOM nodes without
+    // always emitting useful childList mutations. Periodic rescans catch
+    // those updates so tracking does not stall after the first posts.
+    this.periodicScanTimer = setInterval(() => {
+      if (!this.isObserving) return;
+      this.processExistingPosts();
+    }, this.periodicScanIntervalMs);
   }
 
   // Stop observing
@@ -80,6 +90,10 @@ class FBObserver {
     if (this.initialScanTimer) {
       clearTimeout(this.initialScanTimer);
       this.initialScanTimer = null;
+    }
+    if (this.periodicScanTimer) {
+      clearInterval(this.periodicScanTimer);
+      this.periodicScanTimer = null;
     }
     this.isObserving = false;
   }
@@ -172,6 +186,14 @@ class FBObserver {
       if (post && this.isValidPostElement(post)) posts.push(post);
     });
 
+    // Fallback for feed variants where marker attributes are missing.
+    const articleCandidates = container.querySelectorAll('div[role="article"]');
+    articleCandidates.forEach((article) => {
+      if (this.isPostElement(article) && this.isValidPostElement(article)) {
+        posts.push(article);
+      }
+    });
+
     const deduped = [...new Set(posts)];
     return deduped;
   }
@@ -181,18 +203,22 @@ class FBObserver {
     if (!element || !element.querySelector) return false;
 
     const hasMessage = !!element.querySelector(
-      '[data-ad-rendering-role="story_message"], [data-ad-preview="message"], [data-ad-comet-preview="message"]'
+      '[data-ad-rendering-role="story_message"], [data-ad-preview="message"], [data-ad-comet-preview="message"], div[dir="auto"]'
     );
     const hasProfile = !!element.querySelector(
-      '[data-ad-rendering-role="profile_name"], [role="link"][href*="/profile.php"]'
+      '[data-ad-rendering-role="profile_name"], [role="link"][href*="/profile.php"], h2 a[role="link"], h3 a[role="link"], a[role="link"][href^="/"]'
     );
     const hasToolbar = !!element.querySelector(
       '[aria-label="Actions for this post"]'
     );
 
     const isArticle = element.getAttribute("role") === "article";
+    const hasEnoughText = (element.textContent?.trim()?.length || 0) > 20;
 
-    return hasProfile && (hasMessage || hasToolbar);
+    // Support older/newer feed variants:
+    // - marker-rich posts (profile+message/toolbar)
+    // - article cards with enough text and either a profile-like link or toolbar
+    return (hasProfile && (hasMessage || hasToolbar)) || (isArticle && hasEnoughText && (hasProfile || hasToolbar));
   }
 
   // Find post container from a marker element

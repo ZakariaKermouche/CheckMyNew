@@ -8,6 +8,9 @@ class FBStorageManager {
     this.sendTimer = null;
     this.isSending = false;
     this.contextInvalidated = false;
+    this.storageKey = "cmn_unsent_posts";
+    this.fallbackStorageKey = "cmn_unsent_posts_fallback";
+    this.sendTimeoutMs = 15000;
   }
 
   log(...args) {
@@ -20,6 +23,7 @@ class FBStorageManager {
 
   // Initialize
   init() {
+    this.ensureQueueStorageKey();
     // Load any unsent data from storage
     this.loadUnsentData();
 
@@ -30,19 +34,30 @@ class FBStorageManager {
     this.setupUnloadHandler();
   }
 
+  ensureQueueStorageKey() {
+    try {
+      if (chrome?.runtime?.id) {
+        chrome.storage.local.get([this.storageKey], (result) => {
+          if (chrome.runtime.lastError) return;
+          if (Array.isArray(result?.[this.storageKey])) return;
+          chrome.storage.local.set({ [this.storageKey]: [] }, () => {});
+        });
+      } else if (!localStorage.getItem(this.fallbackStorageKey)) {
+        localStorage.setItem(this.fallbackStorageKey, "[]");
+      }
+    } catch (_) {}
+  }
+
   // Add post to queue
   addPost(postData) {
     if (!postData) return;
-
-    this.queue.push({
-      ...postData,
-      queuedAt: Date.now(),
-    });
+    const queueItem = this.buildQueueItem(postData);
+    this.queue.push(queueItem);
 
     this.log("Queued post", {
-      id: postData.id || postData.post_id || postData.postId,
-      source: postData.source,
-      isSponsored: postData.isSponsored,
+      id: queueItem.id || queueItem.post_id || queueItem.postId,
+      source: queueItem.source,
+      isSponsored: queueItem.isSponsored,
     });
 
     // Send if queue is full
@@ -50,7 +65,42 @@ class FBStorageManager {
       this.sendData();
     }
 
+    // Persist queue eagerly so data survives tab crashes/reloads.
+    this.saveUnsentData();
+
     return true;
+  }
+
+  buildQueueItem(postData) {
+    const payload = postData?.register_ad_payload || postData;
+    return {
+      id: postData?.id || null,
+      post_id: postData?.post_id || postData?.id || null,
+      source: postData?.source || null,
+      isSponsored: Boolean(postData?.isSponsored),
+      queuedAt: Date.now(),
+      register_ad_payload: payload,
+    };
+  }
+
+  shouldDropLegacyDomEntry(item) {
+    const payload = item?.register_ad_payload || item || {};
+    const keys = [
+      payload?.adanalyst_ad_id,
+      payload?.html_ad_id,
+      payload?.post_id,
+      item?.post_id,
+      item?.id,
+    ]
+      .filter((v) => v != null)
+      .map((v) => String(v));
+    return keys.some((v) => v.startsWith("dom_"));
+  }
+
+  sanitizeQueue(items) {
+    const input = Array.isArray(items) ? items : [];
+    const cleaned = input.filter((item) => !this.shouldDropLegacyDomEntry(item));
+    return { cleaned, dropped: input.length - cleaned.length };
   }
 
   // Update a queued post by id/post_id
@@ -100,7 +150,7 @@ class FBStorageManager {
     }
 
     this.isSending = true;
-    const dataToSend = [...this.queue];
+    const dataToSend = this.queue.splice(0, this.queue.length);
     const count = dataToSend.length;
     
     console.log("[CMN] 📤 Starting to send", count, "posts to background");
@@ -110,23 +160,108 @@ class FBStorageManager {
         throw new Error("Extension context invalidated");
       }
 
-      const response = await chrome.runtime.sendMessage({
-        type: "POSTS_COLLECTED",
-        data: dataToSend,
-        metadata: {
-          timestamp: Date.now(),
-          pageUrl: window.location.href,
-          count,
-        },
+      const payloads = [];
+      const payloadSourceIndices = [];
+      dataToSend.forEach((item, idx) => {
+        const payload = item?.register_ad_payload || item;
+        if (!payload) return;
+        payloads.push(payload);
+        payloadSourceIndices.push(idx);
       });
 
-      if (response?.success) {
-        console.log("[CMN] ✅ Successfully sent", count, "posts");
-        this.queue = [];
+      if (payloads.length === 0) {
         this.clearStoredData();
+        return;
+      }
+
+      const response = await this.sendMessageWithTimeout(
+        {
+          type: "REGISTER_AD_BATCH",
+          payloads,
+          metadata: {
+            timestamp: Date.now(),
+            pageUrl: window.location.href,
+            count,
+          },
+        },
+        this.sendTimeoutMs
+      );
+      console.log("[CMN] 📬 Backend batch response:", response);
+
+      if (response?.ok) {
+        console.log("[CMN] ✅ Successfully sent", count, "posts");
+        this.applyDbIdMappings(dataToSend, response.mappings || []);
+        const failedIdSet = new Set(
+          Array.isArray(response.failedAdIds)
+            ? response.failedAdIds.map((id) => String(id))
+            : []
+        );
+        const failedPayloadIndexSet = new Set(
+            Array.isArray(response.failedIndices)
+              ? response.failedIndices
+                  .map((n) => Number(n))
+                  .filter((n) => Number.isInteger(n) && n >= 0)
+              : []
+          );
+        const failedSourceIndexSet = new Set(
+            Array.from(failedPayloadIndexSet)
+              .map((payloadIdx) => payloadSourceIndices[payloadIdx])
+              .filter((srcIdx) => Number.isInteger(srcIdx) && srcIdx >= 0)
+          );
+        const droppedPayloadIndexSet = new Set(
+          Array.isArray(response.droppedIndices)
+            ? response.droppedIndices
+                .map((n) => Number(n))
+                .filter((n) => Number.isInteger(n) && n >= 0)
+            : []
+        );
+        const droppedSourceIndexSet = new Set(
+          Array.from(droppedPayloadIndexSet)
+            .map((payloadIdx) => payloadSourceIndices[payloadIdx])
+            .filter((srcIdx) => Number.isInteger(srcIdx) && srcIdx >= 0)
+        );
+
+        const failedItems = dataToSend.filter((item, idx) => {
+          // Dropped items are invalid payloads and should not be retried.
+          if (droppedSourceIndexSet.has(idx)) return false;
+          if (failedSourceIndexSet.has(idx)) return true;
+          const payload = item?.register_ad_payload || item;
+          const key =
+            payload?.adanalyst_ad_id != null
+              ? String(payload.adanalyst_ad_id)
+              : payload?.html_ad_id != null
+              ? String(payload.html_ad_id)
+              : null;
+          if (!key) return false;
+          return failedIdSet.has(key);
+        });
+
+        const knownHandledCount =
+          (typeof response.count === "number" ? response.count : 0) +
+          failedPayloadIndexSet.size +
+          droppedPayloadIndexSet.size;
+
+        const partialUnknownFailure =
+          typeof response.total === "number" &&
+          knownHandledCount < response.total &&
+          failedItems.length === 0 &&
+          failedPayloadIndexSet.size === 0;
+
+        if (failedItems.length > 0 || partialUnknownFailure) {
+          const toRequeue = partialUnknownFailure ? dataToSend : failedItems;
+          console.warn(
+            "[CMN] ⚠️ Backend failed to register some posts; requeueing",
+            toRequeue.length
+          );
+          this.queue = [...toRequeue, ...this.queue];
+          this.saveUnsentData();
+        } else {
+          this.clearStoredData();
+        }
       } else {
         console.warn("[CMN] ⚠️  Backend returned unsuccessful response:", response);
-        this.queue.unshift(...dataToSend);
+        this.queue = [...dataToSend, ...this.queue];
+        this.saveUnsentData();
       }
     } catch (error) {
       const msg = error?.message || String(error);
@@ -139,11 +274,20 @@ class FBStorageManager {
         console.error("[CMN] ❌ Send failed:", msg);
       }
       
-      this.queue.unshift(...dataToSend);
+      this.queue = [...dataToSend, ...this.queue];
       this.saveUnsentData();
     } finally {
       this.isSending = false;
     }
+  }
+
+  async sendMessageWithTimeout(message, timeoutMs) {
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`sendMessage timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+    return Promise.race([chrome.runtime.sendMessage(message), timeoutPromise]);
   }
 
   applyDbIdMappings(dataToSend, mappings) {
@@ -178,18 +322,24 @@ class FBStorageManager {
   // Save unsent data to chrome.storage
   async saveUnsentData() {
     try {
+      try {
+        localStorage.setItem(this.fallbackStorageKey, JSON.stringify(this.queue));
+      } catch (_) {}
+
       if (!chrome?.runtime?.id) {
-        console.error("[CMN] ❌ Storage save failed: Extension context invalidated");
+        console.warn(
+          "[CMN] ⚠️ chrome.runtime unavailable; saved queue only to localStorage fallback"
+        );
         return;
       }
-      
+
       console.log("[CMN] 💾 Saving", this.queue.length, "posts to storage");
-      
+
       await chrome.storage.local.set({
-        cmn_unsent_posts: this.queue,
+        [this.storageKey]: this.queue,
         cmn_last_save: Date.now(),
       });
-      
+
       console.log("[CMN] ✅ Saved successfully");
     } catch (error) {
       console.error("[CMN] ❌ Storage save error:", error.message, error);
@@ -199,13 +349,40 @@ class FBStorageManager {
   // Load unsent data from chrome.storage
   async loadUnsentData() {
     try {
-      const result = await chrome.storage.local.get(["cmn_unsent_posts"]);
-      if (result.cmn_unsent_posts && Array.isArray(result.cmn_unsent_posts)) {
-        console.log("[CMN] 📥 Loaded", result.cmn_unsent_posts.length, "posts from storage");
-        this.queue = result.cmn_unsent_posts;
-      } else {
-        console.log("[CMN] 📭 No saved posts in storage");
+      const result = await chrome.storage.local.get([this.storageKey]);
+      const fromChrome = result[this.storageKey];
+      if (fromChrome && Array.isArray(fromChrome)) {
+        const { cleaned, dropped } = this.sanitizeQueue(fromChrome);
+        console.log("[CMN] 📥 Loaded", cleaned.length, "posts from chrome.storage");
+        if (dropped > 0) {
+          console.warn("[CMN] 🧹 Dropped legacy dom_* entries:", dropped);
+          await chrome.storage.local.set({
+            [this.storageKey]: cleaned,
+            cmn_last_save: Date.now(),
+          });
+        }
+        this.queue = cleaned;
+        return;
       }
+
+      const fallbackRaw = localStorage.getItem(this.fallbackStorageKey);
+      if (fallbackRaw) {
+        const parsed = JSON.parse(fallbackRaw);
+        if (Array.isArray(parsed)) {
+          const { cleaned, dropped } = this.sanitizeQueue(parsed);
+          this.queue = cleaned;
+          console.log("[CMN] 📥 Loaded", cleaned.length, "posts from localStorage fallback");
+          if (dropped > 0) {
+            console.warn("[CMN] 🧹 Dropped legacy dom_* fallback entries:", dropped);
+            try {
+              localStorage.setItem(this.fallbackStorageKey, JSON.stringify(cleaned));
+            } catch (_) {}
+          }
+          return;
+        }
+      }
+
+      console.log("[CMN] 📭 No saved posts in storage");
     } catch (error) {
       console.error("[CMN] ❌ Storage load error:", error.message, error);
     }
@@ -214,7 +391,8 @@ class FBStorageManager {
   // Clear stored data
   async clearStoredData() {
     try {
-      await chrome.storage.local.remove(["cmn_unsent_posts"]);
+      await chrome.storage.local.remove([this.storageKey]);
+      localStorage.removeItem(this.fallbackStorageKey);
     } catch (error) {
     }
   }
@@ -226,15 +404,13 @@ class FBStorageManager {
         // Try to send immediately
         this.sendData();
         // Also save to storage as backup
-        if (chrome?.runtime?.id) {
-          this.saveUnsentData();
-        }
+        this.saveUnsentData();
       }
     });
 
     // Also handle visibility change
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden && this.queue.length > 0 && chrome?.runtime?.id) {
+      if (document.hidden && this.queue.length > 0) {
         this.saveUnsentData();
       }
     });
