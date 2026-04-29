@@ -1005,19 +1005,19 @@
         }
 
         console.log("[CMN] 📥 GraphQL Post Received:", {
-          postId,
+          postId: postId || fallbackId,
           isSponsored: !!post.ad?.ad_id,
           message: post.message?.slice(0, 50) || "no message",
           author: post.author?.name || "unknown",
           timestamp: Date.now(),
         });
 
-        if (this.postDetector.isProcessedGraphQL(postId)) {
-          console.log("[CMN] ⚠️  Post already processed:", postId);
+        if (this.postDetector.isProcessedGraphQL(fallbackId)) {
+          console.log("[CMN] ⚠️  Post already processed:", fallbackId);
           return;
         }
 
-        this.postDetector.markAsProcessedGraphQL(postId);
+        this.postDetector.markAsProcessedGraphQL(fallbackId);
 
         const author =
           post.author && typeof post.author === "object"
@@ -1033,8 +1033,8 @@
             : null;
 
         const postData = {
-          id: post.id || postId,
-          post_id: postId,
+          id: post.id || postId || fallbackId,
+          post_id: postId || fallbackId,
           author,
           to,
           message: post.message,
