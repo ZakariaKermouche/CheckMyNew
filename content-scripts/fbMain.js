@@ -995,14 +995,14 @@
     handleGraphQLPost(post) {
       try {
         this.stats.graphqlPostsReceived++;
-        const postId = post.post_id || post.id;
-        const fallbackId =
-          postId ||
-          [
-            post.author?.id || post.author?.name || "anon",
-            post.creation_time || "no_time",
-            (post.message || "").slice(0, 80),
-          ].join("::");
+        const postId = post.post_id || null;
+        if (!postId) {
+          console.log("[CMN] ⚠️  GraphQL post skipped: missing stable post_id", {
+            id: post.id || null,
+            message: post.message?.slice(0, 50) || "no message",
+          });
+          return;
+        }
 
         console.log("[CMN] 📥 GraphQL Post Received:", {
           postId: postId || fallbackId,

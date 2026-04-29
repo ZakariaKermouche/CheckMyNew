@@ -4,13 +4,6 @@ class FBObserver {
     this.observer = null;
     this.onPostFound = onPostFound;
     this.onPostRemoved = onPostRemoved;
-    this.feedContainer = null;
-    if (this.healthTimer) clearInterval(this.healthTimer);
-    this.healthTimer = null;
-    if (this.boundScrollHandler) {
-      window.removeEventListener("scroll", this.boundScrollHandler);
-      this.boundScrollHandler = null;
-    }
     this.isObserving = false;
 
     this.reconnectAttempts = 0;
@@ -21,17 +14,17 @@ class FBObserver {
 
     this.initialScanTimer = null;
     this.periodicScanTimer = null;
-    this.scanScheduled = false;
     this.healthTimer = null;
     this.boundScrollHandler = null;
 
-    // Stable dedup/persistence layer. DOM is transient on Facebook.
-    this.collectedPosts = new Map(); // postId -> metadata snapshot
-    this.nodeToPostId = new WeakMap();
+    this.scanScheduled = false;
+    this.scanInProgress = false;
+
+    // Dedup + persistence MUST be ID-based (not node-based) for FB virtualization.
+    this.collectedPosts = new Map(); // post_id -> post snapshot
 
     this.stats = {
       scans: 0,
-      candidates: 0,
       extracted: 0,
       duplicates: 0,
       updates: 0,
@@ -39,15 +32,9 @@ class FBObserver {
     };
   }
 
-  findFeedContainer() {
-    return document.body;
-  }
-
   start() {
     if (this.isObserving) return;
-
-    this.feedContainer = this.findFeedContainer();
-    if (!this.feedContainer) {
+    if (!document.body) {
       this.scheduleReconnect();
       return;
     }
@@ -55,20 +42,13 @@ class FBObserver {
     this.observer = new MutationObserver((mutations) => {
       this.handleMutations(mutations);
     });
-
-    this.observer.observe(this.feedContainer, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["href", "data-ft", "aria-label", "role"],
-    });
+    this.observer.observe(document.body, { childList: true, subtree: true });
 
     this.isObserving = true;
     this.reconnectAttempts = 0;
 
-    if (this.initialScanTimer) clearTimeout(this.initialScanTimer);
     this.initialScanTimer = setTimeout(() => {
-      if (this.isObserving) this.scanForPosts();
+      if (this.isObserving) this.scanForPosts("initial");
       this.initialScanTimer = null;
     }, this.initialScanDelayMs);
 
@@ -82,8 +62,8 @@ class FBObserver {
 
     this.healthTimer = setInterval(() => {
       if (!this.isObserving) return;
-      if (!this.observer || !document.body || this.feedContainer !== document.body) {
-        console.debug("[CMN][FBObserver] reconnecting observer after feed replacement");
+      if (!this.observer || !document.body) {
+        console.debug("[CMN][FBObserver] health check failed, reconnecting");
         this.stop();
         this.start();
       }
@@ -97,42 +77,33 @@ class FBObserver {
     }
     if (this.initialScanTimer) clearTimeout(this.initialScanTimer);
     if (this.periodicScanTimer) clearInterval(this.periodicScanTimer);
-    this.initialScanTimer = null;
-    this.periodicScanTimer = null;
-    this.scanScheduled = false;
-    this.healthTimer = null;
-    this.boundScrollHandler = null;
     if (this.healthTimer) clearInterval(this.healthTimer);
-    this.healthTimer = null;
     if (this.boundScrollHandler) {
       window.removeEventListener("scroll", this.boundScrollHandler);
-      this.boundScrollHandler = null;
     }
+
+    this.initialScanTimer = null;
+    this.periodicScanTimer = null;
+    this.healthTimer = null;
+    this.boundScrollHandler = null;
+
+    this.scanScheduled = false;
+    this.scanInProgress = false;
     this.isObserving = false;
   }
 
   handleMutations(mutations) {
-    let shouldScan = false;
+    console.debug("[CMN][FBObserver] mutation batch", { count: mutations.length });
+    this.scheduleScan("mutation");
 
-    for (const mutation of mutations) {
-      if (mutation.type === "childList") {
-        if ((mutation.addedNodes && mutation.addedNodes.length) || (mutation.removedNodes && mutation.removedNodes.length)) {
-          shouldScan = true;
-        }
-      }
-
-      if (mutation.removedNodes && this.onPostRemoved) {
+    if (this.onPostRemoved) {
+      for (const mutation of mutations) {
         mutation.removedNodes.forEach((node) => {
           if (node?.nodeType === Node.ELEMENT_NODE && node.getAttribute?.("role") === "article") {
             this.onPostRemoved(node);
           }
         });
       }
-    }
-
-    if (shouldScan) {
-      console.debug("[CMN][FBObserver] mutation batch", { count: mutations.length });
-      this.scheduleScan("mutation");
     }
   }
 
@@ -147,44 +118,67 @@ class FBObserver {
   }
 
   scanForPosts(source = "manual") {
-    if (!this.feedContainer) return;
-    this.stats.scans += 1;
+    if (this.scanInProgress) return;
+    this.scanInProgress = true;
 
-    const candidates = this.findCandidatePosts();
-    this.stats.candidates += candidates.length;
+    try {
+      this.stats.scans += 1;
 
-    for (const node of candidates) {
-      try {
-        const incoming = this.extractPostData(node);
-        if (!incoming?.postId) continue;
+      const articles = this.findCandidatePosts();
+      const extractedPostIds = [];
+      const duplicateIds = [];
+      const newlyAddedIds = [];
+      const failedExtractions = [];
 
+      for (const node of articles) {
+        let incoming = null;
+        try {
+          incoming = this.extractPostData(node);
+        } catch (error) {
+          this.stats.failures += 1;
+          failedExtractions.push(String(error?.message || error));
+          continue;
+        }
+
+        if (!incoming?.postId) {
+          failedExtractions.push("missing_post_id");
+          continue;
+        }
+
+        extractedPostIds.push(incoming.postId);
         const existing = this.collectedPosts.get(incoming.postId) || null;
         const merged = this.mergePost(existing, incoming);
         const changed = !existing || JSON.stringify(existing) !== JSON.stringify(merged);
 
         this.collectedPosts.set(incoming.postId, merged);
-        this.nodeToPostId.set(node, incoming.postId);
 
-        if (!existing) this.stats.extracted += 1;
-        if (existing && changed) this.stats.updates += 1;
-        if (existing && !changed) this.stats.duplicates += 1;
+        if (!existing) {
+          this.stats.extracted += 1;
+          newlyAddedIds.push(incoming.postId);
+        } else if (changed) {
+          this.stats.updates += 1;
+        } else {
+          this.stats.duplicates += 1;
+          duplicateIds.push(incoming.postId);
+        }
 
         if ((!existing || changed) && this.onPostFound) {
           this.onPostFound(node);
         }
-      } catch (error) {
-        this.stats.failures += 1;
-        console.debug("[CMN][FBObserver] extract failure", error);
       }
-    }
 
-    console.log("[collector] scan", {
-      source,
-      articlesFound: candidates.length,
-      newPosts: this.stats.extracted,
-      updatedPosts: this.stats.updates,
-      duplicates: this.stats.duplicates,
-    });
+      console.log("[collector] scan", {
+        source,
+        totalArticlesFound: articles.length,
+        extractedPostIds,
+        duplicateIds,
+        newlyAddedIds,
+        failedExtractions,
+        mountedArticlesCount: document.querySelectorAll('[role="article"]').length,
+      });
+    } finally {
+      this.scanInProgress = false;
+    }
   }
 
   findCandidatePosts() {
@@ -194,16 +188,22 @@ class FBObserver {
   extractPostId(node) {
     if (!node) return null;
 
-    const anchors = Array.from(node.querySelectorAll('a[href]'));
+    const anchors = Array.from(node.querySelectorAll("a[href]"));
     for (const a of anchors) {
       const href = a.getAttribute("href") || "";
-      const match = href.match(/story_fbid=(\d+)/) || href.match(/\/posts\/(\d+)/) || href.match(/\/permalink\/(\d+)/) || href.match(/fbid=(\d+)/);
+      const match =
+        href.match(/story_fbid=(\d+)/) ||
+        href.match(/\/posts\/(\d+)/) ||
+        href.match(/\/permalink\/(\d+)/) ||
+        href.match(/fbid=(\d+)/);
       if (match?.[1]) return match[1];
     }
 
     const dataFtEl = node.closest("[data-ft]") || node.querySelector("[data-ft]");
     const dataFt = dataFtEl?.getAttribute?.("data-ft") || "";
-    const ftMatch = dataFt.match(/"top_level_post_id"\s*:\s*"(\d+)"/) || dataFt.match(/"mf_story_key"\s*:\s*"(\d+)"/);
+    const ftMatch =
+      dataFt.match(/"top_level_post_id"\s*:\s*"(\d+)"/) ||
+      dataFt.match(/"mf_story_key"\s*:\s*"(\d+)"/);
     if (ftMatch?.[1]) return ftMatch[1];
 
     return null;
@@ -218,26 +218,21 @@ class FBObserver {
       node.querySelector('[data-ad-preview="message"]') ||
       node.querySelector('[data-ad-comet-preview="message"]');
 
-    const message = (messageNode?.innerText || "").trim();
-    const permalink = node.querySelector('a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid="]')?.href || "";
-    const author = node.querySelector('h2 a[role="link"], h3 a[role="link"], strong a[role="link"]')?.textContent?.trim() || "";
-
     return {
       postId,
-      message,
-      author,
-      permalink,
+      message: (messageNode?.innerText || "").trim(),
+      permalink:
+        node.querySelector('a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid="]')?.href || "",
       seenAt: Date.now(),
     };
   }
 
   mergePost(existing, incoming) {
-    if (!existing) return { ...incoming };
+    if (!existing) return { ...incoming, firstSeenAt: incoming.seenAt };
     return {
       ...existing,
       ...incoming,
       message: incoming.message || existing.message || "",
-      author: incoming.author || existing.author || "",
       permalink: incoming.permalink || existing.permalink || "",
       firstSeenAt: existing.firstSeenAt || existing.seenAt || incoming.seenAt,
       seenAt: incoming.seenAt || existing.seenAt,
@@ -255,13 +250,5 @@ class FBObserver {
     this.stop();
     this.collectedPosts.clear();
     this.start();
-  }
-
-  getStats() {
-    return {
-      ...this.stats,
-      observedPosts: this.collectedPosts.size,
-      isObserving: this.isObserving,
-    };
   }
 }
