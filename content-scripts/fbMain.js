@@ -22,6 +22,7 @@
       this.graphqlPostsMap = new Map();
       this.domPostsInProcess = new Map();
       this.pendingDomByFingerprint = new Map();
+      this.pendingDomPosts = new Map();
       this.docIdPrimeAttempts = new Set();
       this.graphqlNetworkCache = [];
       this.debugCounters = { interceptedPayloads: 0, matchedPosts: 0, domFallbackPosts: 0, skipReasons: {} };
@@ -88,32 +89,67 @@
       };
     }
 
+    isLikelyProfileId(id) {
+      if (!id) return true;
+      const value = String(id).trim();
+      if (!/^\d{6,}$/.test(value)) return true;
+      return value.length < 12;
+    }
+
+    normalizePermalink(urlLike) {
+      if (!urlLike) return "";
+      try {
+        const absolute = urlLike.startsWith("http")
+          ? urlLike
+          : `https://www.facebook.com${urlLike.startsWith("/") ? urlLike : `/${urlLike}`}`;
+        const url = new URL(absolute);
+        const storyFbid = url.searchParams.get("story_fbid");
+        const fbid = url.searchParams.get("fbid");
+        const pfbid = url.searchParams.get("pfbid");
+        if (storyFbid) return `story_fbid:${storyFbid}`;
+        if (fbid) return `fbid:${fbid}`;
+        if (pfbid) return `pfbid:${pfbid}`;
+        return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
+      } catch (_) {
+        return "";
+      }
+    }
+
     findBestNetworkMatch(domMetadata) {
       if (this.config.debugMode) {
         console.log("[CMN][findBestNetworkMatch] start", { cacheSize: this.graphqlNetworkCache.length, domMetadata });
       }
       const fingerprint = this.buildFingerprint(domMetadata || {});
       const domMsg = this.normalizeStringForFingerprint(domMetadata?.message || "");
+      const domCanonicalUrl = this.normalizePermalink(domMetadata?.canonicalUrl || domMetadata?.url || "");
+      let best = null;
       for (let i = this.graphqlNetworkCache.length - 1; i >= 0; i--) {
         const candidate = this.graphqlNetworkCache[i];
         if (!candidate) continue;
-        if (domMetadata?.postId && candidate.post_id && candidate.post_id === domMetadata.postId) {
+        if (domMetadata?.postId && candidate.post_id && candidate.post_id === domMetadata.postId && !this.isLikelyProfileId(domMetadata.postId)) {
           if (this.config.debugMode) console.log("[CMN][findBestNetworkMatch] matched by postId", domMetadata.postId);
-          return candidate;
+          return { candidate, strategy: "exact_id", matchConfidence: 1.0 };
+        }
+        const candidateCanonical = this.normalizePermalink(candidate.url || "");
+        if (domCanonicalUrl && candidateCanonical && domCanonicalUrl === candidateCanonical) {
+          best = { candidate, strategy: "canonical_url", matchConfidence: 0.95 };
+          break;
         }
         const cfp = this.buildFingerprint({ authorName: candidate.author?.name, groupName: candidate.to?.name, message: candidate.message });
         if (fingerprint && cfp && fingerprint === cfp) {
-          if (this.config.debugMode) console.log("[CMN][findBestNetworkMatch] matched by fingerprint", fingerprint);
-          return candidate;
+          if (!best || best.matchConfidence < 0.75) {
+            best = { candidate, strategy: "fingerprint", matchConfidence: 0.75 };
+          }
         }
         const cmsg = this.normalizeStringForFingerprint(candidate.message || "");
         if (domMsg && cmsg && (domMsg.startsWith(cmsg.slice(0, 24)) || cmsg.startsWith(domMsg.slice(0, 24)))) {
-          if (this.config.debugMode) console.log("[CMN][findBestNetworkMatch] matched by message prefix");
-          return candidate;
+          if (!best || best.matchConfidence < 0.55) {
+            best = { candidate, strategy: "fuzzy", matchConfidence: 0.55 };
+          }
         }
       }
-      if (this.config.debugMode) console.log("[CMN][findBestNetworkMatch] no match");
-      return null;
+      if (this.config.debugMode) console.log(best ? "[CMN][findBestNetworkMatch] selected match" : "[CMN][findBestNetworkMatch] no match", best || { domMetadata });
+      return best;
     }
     normalizeStringForFingerprint(text) {
       if (!text) return "";
@@ -236,11 +272,14 @@
     }
 
     extractDomMetadata(element) {
+      const url = this.extractPostUrlFromElement(element);
       return {
         postId: this.extractPostIdFromElement(element),
         authorName: this.extractProfileNameFromElement(element),
         groupName: this.extractGroupNameFromElement(element),
         message: this.extractPostMessageFromElement(element),
+        url: url || "",
+        canonicalUrl: this.normalizePermalink(url || ""),
       };
     }
 
@@ -253,7 +292,7 @@
           element.getAttribute("data-post-id") ||
           element.getAttribute("data-feed-item-id") ||
           element.getAttribute("data-story-id");
-        if (direct && /^\d{6,}$/.test(direct)) return direct;
+        if (direct && /^\d{6,}$/.test(direct) && !this.isLikelyProfileId(direct)) return direct;
 
         // Look for any descendant carrying known ids
         const candidate = element.querySelector(
@@ -264,7 +303,7 @@
             candidate.getAttribute("data-post-id") ||
             candidate.getAttribute("data-feed-item-id") ||
             candidate.getAttribute("data-story-id");
-          if (val && /^\d{6,}$/.test(val)) return val;
+          if (val && /^\d{6,}$/.test(val) && !this.isLikelyProfileId(val)) return val;
         }
 
         // data-ft is often JSON with top_level_post_id / content_owner_id_new
@@ -277,11 +316,11 @@
               parsed?.top_level_post_id ||
               parsed?.top_level_post_id_for_top_level_comments ||
               null;
-            if (id && /^\d{6,}$/.test(String(id))) return String(id);
+            if (id && /^\d{6,}$/.test(String(id)) && !this.isLikelyProfileId(String(id))) return String(id);
           } catch (_) {
             // data-ft sometimes isn't strict JSON; fall back to regex
             const match = dataFt.match(/"top_level_post_id"\s*:\s*"(\d+)"/);
-            if (match?.[1]) return match[1];
+            if (match?.[1] && !this.isLikelyProfileId(match[1])) return match[1];
           }
         }
 
@@ -289,7 +328,7 @@
         const dataFtid = element.getAttribute("data-ftid");
         if (dataFtid) {
           const match = dataFtid.match(/(\d{6,})/);
-          if (match?.[1]) return match[1];
+          if (match?.[1] && !this.isLikelyProfileId(match[1])) return match[1];
         }
 
         // Try permalink-style anchors:
@@ -741,7 +780,7 @@
       return false;
     }
 
-    buildRegisterAdPayload(postData) {
+    buildRegisterAdPayload(postData, networkMatch = null) {
       if (!postData) return null;
       const postId = postData.post_id || postData.id;
 
@@ -793,6 +832,8 @@
       // Extract attachments in the proper format for raw_ad
       const formattedAttachments = this.extractAttachmentsFromPostData(postData);
 
+      const safeNetworkMatch = networkMatch || {};
+
       const maxRawAdLength = 30000;
       const rawAdGraphQL =
         typeof postData?.raw_ad === "string"
@@ -802,9 +843,9 @@
           : JSON.stringify({
               post_id: postData.post_id || null,
               id: postData.id || null,
-              message: networkMatch?.message || postData.message || "",
-              url: postData.url || "",
-              author: networkMatch?.author || postData.author || null,
+              message: safeNetworkMatch.message || postData.message || "",
+              url: safeNetworkMatch.url || postData.url || "",
+              author: safeNetworkMatch.author || postData.author || null,
               attachments: formattedAttachments,
               ad: postData.ad || null,
             });
@@ -903,14 +944,36 @@
       return description.toLowerCase().includes("private");
     }
 
-    queuePostForSending(postData) {
+    queuePostForSending(postData, networkMatch = null) {
       if (!postData) return false;
       if (postData.queued) return false;
       if (this.isPrivatePost(postData)) return false;
 
       postData.queued = true;
       if (!postData.register_ad_payload) {
-        postData.register_ad_payload = this.buildRegisterAdPayload(postData);
+        let resolvedNetworkMatch = networkMatch || null;
+        try {
+          if (!resolvedNetworkMatch) {
+            const domMetadata = {
+              postId: postData.post_id || postData.id || null,
+              message: postData.message || "",
+              authorName: postData.author?.name || postData.author || "",
+              groupName: postData.to?.name || postData.to || "",
+              url: postData.url || "",
+            };
+            const resolved = this.findBestNetworkMatch(domMetadata);
+            resolvedNetworkMatch =
+              resolved?.matchConfidence >= 0.55 ? resolved.candidate : null;
+            if (this.config.debugMode) {
+              console.log("[CMN][queuePostForSending] enrichment", resolved || { strategy: "none", matchConfidence: 0 });
+            }
+          }
+        } catch (e) {
+          console.warn("network enrichment failed", e);
+          resolvedNetworkMatch = null;
+        }
+
+        postData.register_ad_payload = this.buildRegisterAdPayload(postData, resolvedNetworkMatch);
         if (!postData.register_ad_payload) {
           postData.queued = false;
           return false;
@@ -1225,7 +1288,10 @@
         let gqlPost = null;
         let matchedPostId = null;
 
-        if (domPostId && this.graphqlPostsMap.has(domPostId)) {
+        if (domPostId && this.isLikelyProfileId(domPostId) && this.config.debugMode) {
+          console.log("[CMN][identity] rejected DOM id (likely profile/page id)", domPostId);
+        }
+        if (domPostId && !this.isLikelyProfileId(domPostId) && this.graphqlPostsMap.has(domPostId)) {
           gqlPost = this.graphqlPostsMap.get(domPostId);
           matchedPostId = domPostId;
         } else {
@@ -1268,14 +1334,24 @@
           {
             this.debugCounters.domFallbackPosts += 1;
             const existingDomPost = this.graphqlPostsMap.get(domOnlyId) || null;
-            const networkMatch = this.findBestNetworkMatch(domMetadata);
+            const networkMatchResult = this.findBestNetworkMatch(domMetadata);
+            const networkMatch = networkMatchResult?.matchConfidence >= 0.55
+              ? networkMatchResult.candidate
+              : null;
+            if (this.config.debugMode) {
+              if (networkMatchResult) {
+                console.log("[CMN][identity] chosen strategy", networkMatchResult.strategy, networkMatchResult.matchConfidence);
+              } else {
+                console.log("[CMN][identity] match failed for DOM fallback", domOnlyId);
+              }
+            }
             const domOnlyPost = {
               id: domOnlyId,
               post_id: domOnlyId,
               author: networkMatch?.author || postData.author || null,
               to: networkMatch?.to || postData.to || null,
               message: networkMatch?.message || postData.message || "",
-              url: networkMatch?.url || domMetadata.url || "",
+              url: networkMatch?.url || "",
               creation_time: null,
               privacy: null,
               feedback_id: null,
@@ -1301,8 +1377,21 @@
               ? { ...existingDomPost, ...domOnlyPost, message: domOnlyPost.message || existingDomPost.message || "" }
               : domOnlyPost;
 
-            this.graphqlPostsMap.set(domOnlyId, merged);
-            this.domElementByPostId.set(domOnlyId, postElement);
+            const shouldDelayDomFallback =
+              !merged.author &&
+              (!merged.message || merged.message.length < 40) &&
+              !merged.url;
+            if (shouldDelayDomFallback) {
+              this.pendingDomPosts.set(domOnlyId, {
+                postData: merged,
+                element: postElement,
+                createdAt: Date.now(),
+              });
+              if (this.config.debugMode) console.log("[CMN][pendingDomPosts] queued", domOnlyId);
+            } else {
+              this.graphqlPostsMap.set(domOnlyId, merged);
+              this.domElementByPostId.set(domOnlyId, postElement);
+            }
             this.log("Tracking DOM fallback post", domOnlyId);
 
             if (this.visibilityTracker) {
@@ -1369,8 +1458,26 @@
       };
     }
 
+    flushPendingDomPosts(force = false) {
+      const now = Date.now();
+      for (const [pendingId, pending] of this.pendingDomPosts.entries()) {
+        const waitMs = now - (pending.createdAt || now);
+        if (!force && waitMs < 3000) continue;
+        this.pendingDomPosts.delete(pendingId);
+        this.graphqlPostsMap.set(pendingId, pending.postData);
+        this.domElementByPostId.set(pendingId, pending.element);
+        if (this.visibilityTracker) {
+          this.visibilityTracker.track(pending.element, pendingId);
+        }
+        if (this.config.debugMode) {
+          console.log("[CMN][pendingDomPosts] flush", { pendingId, waitMs });
+        }
+      }
+    }
+
     // Handle when posts become visible
     handlePostsVisible(visiblePostIds) {
+      this.flushPendingDomPosts(false);
       visiblePostIds.forEach((postId) => {
         const postData = this.graphqlPostsMap.get(postId);
 
