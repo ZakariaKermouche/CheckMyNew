@@ -192,13 +192,21 @@ class FBObserver {
     for (const a of anchors) {
       const href = a.getAttribute("href") || "";
       const match =
-        href.match(/story_fbid=(\d+)/) ||
+        href.match(/[?&]story_fbid=(\d+)/) ||
         href.match(/\/posts\/(\d+)/) ||
-        href.match(/\/permalink\/(\d+)/) ||
-        href.match(/fbid=(\d+)/);
+        href.match(/\/permalink\/(\d+)/);
       if (match?.[1]) return match[1];
     }
 
+
+
+    // Fallback: story.php links often carry both story_fbid and id (page/user id).
+    for (const a of anchors) {
+      const href = a.getAttribute("href") || "";
+      if (!href.includes("story.php")) continue;
+      const match = href.match(/[?&]story_fbid=(\d+)/);
+      if (match?.[1]) return match[1];
+    }
     const dataFtEl = node.closest("[data-ft]") || node.querySelector("[data-ft]");
     const dataFt = dataFtEl?.getAttribute?.("data-ft") || "";
     const ftMatch =
