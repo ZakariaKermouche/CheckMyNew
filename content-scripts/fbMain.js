@@ -802,9 +802,9 @@
           : JSON.stringify({
               post_id: postData.post_id || null,
               id: postData.id || null,
-              message: networkMatch?.message || postData.message || "",
+              message: postData.message || "",
               url: postData.url || "",
-              author: networkMatch?.author || postData.author || null,
+              author: postData.author || null,
               attachments: formattedAttachments,
               ad: postData.ad || null,
             });
