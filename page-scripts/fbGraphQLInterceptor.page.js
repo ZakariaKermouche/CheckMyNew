@@ -332,11 +332,7 @@ class FBGraphQLInterceptor {
    * Extract post information from a Story node
    */
   extractPostData(storyNode) {
-    if (
-      !storyNode ||
-      storyNode.__typename !== "Story" ||
-      !storyNode.viewability_config
-    ) {
+    if (!storyNode || storyNode.__typename !== "Story") {
       return null;
     }
     const post = {
@@ -538,6 +534,24 @@ class FBGraphQLInterceptor {
       }
     } catch (e) {
       // Privacy extraction failed
+    }
+    // Normalize frequently missing fields so downstream payloads are consistent.
+    post.id = post.id || storyNode.id || storyNode.post_id || null;
+    post.post_id = post.post_id || storyNode.post_id || storyNode.id || null;
+    post.message = post.message || "";
+    post.url =
+      post.url ||
+      storyNode?.wwwURL ||
+      storyNode?.url ||
+      "";
+    if (!post.author) {
+      post.author = {
+        name: "",
+        id: null,
+        page: "",
+        type: "",
+        profile_picture: "",
+      };
     }
     return post;
   }
