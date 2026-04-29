@@ -23,6 +23,7 @@
       this.domPostsInProcess = new Map();
       this.pendingDomByFingerprint = new Map();
       this.docIdPrimeAttempts = new Set();
+      this.graphqlNetworkCache = [];
 
       // Config
       this.config = {
@@ -51,6 +52,43 @@
       this.domElementByPostId = new Map(); // postId -> HTMLElement (best-effort)
     }
 
+
+    cacheGraphQLPayload(post) {
+      if (!post || typeof post !== "object") return;
+      const payload = {
+        id: post.id || null,
+        post_id: post.post_id || null,
+        author: post.author || null,
+        to: post.to || null,
+        message: post.message || "",
+        url: post.url || "",
+        attachments: Array.isArray(post.attachments) ? post.attachments : [],
+        images: Array.isArray(post.images) ? post.images : [],
+        videos: Array.isArray(post.videos) ? post.videos : [],
+        ad: post.ad || null,
+        source: post.source || "graphql",
+        cachedAt: Date.now(),
+      };
+      this.graphqlNetworkCache.push(payload);
+      if (this.graphqlNetworkCache.length > 600) {
+        this.graphqlNetworkCache = this.graphqlNetworkCache.slice(-600);
+      }
+    }
+
+    findBestNetworkMatch(domMetadata) {
+      const fingerprint = this.buildFingerprint(domMetadata || {});
+      const domMsg = this.normalizeStringForFingerprint(domMetadata?.message || "");
+      for (let i = this.graphqlNetworkCache.length - 1; i >= 0; i--) {
+        const candidate = this.graphqlNetworkCache[i];
+        if (!candidate) continue;
+        if (domMetadata?.postId && candidate.post_id && candidate.post_id === domMetadata.postId) return candidate;
+        const cfp = this.buildFingerprint({ authorName: candidate.author?.name, groupName: candidate.to?.name, message: candidate.message });
+        if (fingerprint && cfp && fingerprint === cfp) return candidate;
+        const cmsg = this.normalizeStringForFingerprint(candidate.message || "");
+        if (domMsg && cmsg && (domMsg.startsWith(cmsg.slice(0, 24)) || cmsg.startsWith(domMsg.slice(0, 24)))) return candidate;
+      }
+      return null;
+    }
     normalizeStringForFingerprint(text) {
       if (!text) return "";
       return (
@@ -731,9 +769,9 @@
           : JSON.stringify({
               post_id: postData.post_id || null,
               id: postData.id || null,
-              message: postData.message || "",
+              message: networkMatch?.message || postData.message || "",
               url: postData.url || "",
-              author: postData.author || null,
+              author: networkMatch?.author || postData.author || null,
               attachments: formattedAttachments,
               ad: postData.ad || null,
             });
@@ -995,7 +1033,15 @@
     handleGraphQLPost(post) {
       try {
         this.stats.graphqlPostsReceived++;
-        const postId = post.post_id || post.id;
+        this.cacheGraphQLPayload(post);
+        const postId = post.post_id || null;
+        if (!postId) {
+          console.log("[CMN] ⚠️  GraphQL post skipped: missing stable post_id", {
+            id: post.id || null,
+            message: post.message?.slice(0, 50) || "no message",
+          });
+          return;
+        }
 
         console.log("[CMN] 📥 GraphQL Post Received:", {
           postId,
@@ -1069,8 +1115,8 @@
             post.ad?.client_token || post.ad_client_token || null,
         };
 
-        this.graphqlPostsMap.set(postId, postData);
-        this.log("GraphQL post tracked", postId);
+        this.graphqlPostsMap.set(postData.post_id, postData);
+        this.log("GraphQL post tracked", postData.post_id);
         this.stats.newsPostsCollected++;
       } catch (error) {
         this.stats.errors++;
@@ -1163,8 +1209,52 @@
             this.visibilityTracker.track(postElement, matchedPostId);
           }
         } else {
-          // Skip DOM-only posts without GraphQL match - we only want posts with complete data
-          this.log("Skipping DOM post without GraphQL match (incomplete data)", domPostId);
+          const domOnlyId = domPostId || domFingerprint;
+          if (!domOnlyId) {
+            this.log("Skipping DOM post without GraphQL match or stable ID", domPostId);
+          } else {
+            const existingDomPost = this.graphqlPostsMap.get(domOnlyId) || null;
+            const networkMatch = this.findBestNetworkMatch(domMetadata);
+            const domOnlyPost = {
+              id: domOnlyId,
+              post_id: domOnlyId,
+              author: networkMatch?.author || postData.author || null,
+              to: networkMatch?.to || postData.to || null,
+              message: networkMatch?.message || postData.message || "",
+              url: networkMatch?.url || domMetadata.url || "",
+              creation_time: null,
+              privacy: null,
+              feedback_id: null,
+              attachments: networkMatch?.attachments || [],
+              attachment_count: 0,
+              engagment: {
+                reaction_count: null,
+                comment_count: null,
+                share_count: null,
+              },
+              ad: null,
+              isSponsored: false,
+              externalDomain: this.extractDomain(domMetadata.url || ""),
+              detectedAt: Date.now(),
+              source: "dom_fallback",
+              inDOM: true,
+              domFoundAt: Date.now(),
+              visibleAt: null,
+              seenAt: null,
+            };
+
+            const merged = existingDomPost
+              ? { ...existingDomPost, ...domOnlyPost, message: domOnlyPost.message || existingDomPost.message || "" }
+              : domOnlyPost;
+
+            this.graphqlPostsMap.set(domOnlyId, merged);
+            this.domElementByPostId.set(domOnlyId, postElement);
+            this.log("Tracking DOM fallback post", domOnlyId);
+
+            if (this.visibilityTracker) {
+              this.visibilityTracker.track(postElement, domOnlyId);
+            }
+          }
         }
 
         this.postDetector.markAsProcessed(postElement);
