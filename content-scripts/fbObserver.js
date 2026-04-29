@@ -59,6 +59,8 @@ class FBObserver {
     this.observer.observe(this.feedContainer, {
       childList: true,
       subtree: true,
+      attributes: true,
+      attributeFilter: ["href", "data-ft", "aria-label", "role"],
     });
 
     this.isObserving = true;
