@@ -1170,8 +1170,51 @@
             this.visibilityTracker.track(postElement, matchedPostId);
           }
         } else {
-          // Skip DOM-only posts without GraphQL match - we only want posts with complete data
-          this.log("Skipping DOM post without GraphQL match (incomplete data)", domPostId);
+          const domOnlyId = domPostId || domFingerprint;
+          if (!domOnlyId) {
+            this.log("Skipping DOM post without GraphQL match or stable ID", domPostId);
+          } else {
+            const existingDomPost = this.graphqlPostsMap.get(domOnlyId) || null;
+            const domOnlyPost = {
+              id: domOnlyId,
+              post_id: domOnlyId,
+              author: postData.author || null,
+              to: postData.to || null,
+              message: postData.message || "",
+              url: domMetadata.url || "",
+              creation_time: null,
+              privacy: null,
+              feedback_id: null,
+              attachments: [],
+              attachment_count: 0,
+              engagment: {
+                reaction_count: null,
+                comment_count: null,
+                share_count: null,
+              },
+              ad: null,
+              isSponsored: false,
+              externalDomain: this.extractDomain(domMetadata.url || ""),
+              detectedAt: Date.now(),
+              source: "dom_fallback",
+              inDOM: true,
+              domFoundAt: Date.now(),
+              visibleAt: null,
+              seenAt: null,
+            };
+
+            const merged = existingDomPost
+              ? { ...existingDomPost, ...domOnlyPost, message: domOnlyPost.message || existingDomPost.message || "" }
+              : domOnlyPost;
+
+            this.graphqlPostsMap.set(domOnlyId, merged);
+            this.domElementByPostId.set(domOnlyId, postElement);
+            this.log("Tracking DOM fallback post", domOnlyId);
+
+            if (this.visibilityTracker) {
+              this.visibilityTracker.track(postElement, domOnlyId);
+            }
+          }
         }
 
         this.postDetector.markAsProcessed(postElement);
