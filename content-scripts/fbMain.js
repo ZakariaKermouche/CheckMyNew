@@ -997,6 +997,16 @@
         this.stats.graphqlPostsReceived++;
         const postId = post.post_id || post.id;
 
+        // Guard both post_id and id — partial copies share id but lack post_id
+        if (post.post_id && this.postDetector.isProcessedGraphQL(post.post_id)) return;
+        if (post.id && this.postDetector.isProcessedGraphQL(post.id)) return;
+
+        this.postDetector.markAsProcessedGraphQL(postId);
+
+        if (post.id && post.id !== postId) {
+          this.postDetector.markAsProcessedGraphQL(post.id);
+        }
+
         console.log("[CMN] 📥 GraphQL Post Received:", {
           postId,
           isSponsored: !!post.ad?.ad_id,
@@ -1004,13 +1014,6 @@
           author: post.author?.name || "unknown",
           timestamp: Date.now(),
         });
-
-        if (this.postDetector.isProcessedGraphQL(postId)) {
-          console.log("[CMN] ⚠️  Post already processed:", postId);
-          return;
-        }
-
-        this.postDetector.markAsProcessedGraphQL(postId);
 
         const author =
           post.author && typeof post.author === "object"
@@ -1163,8 +1166,38 @@
             this.visibilityTracker.track(postElement, matchedPostId);
           }
         } else {
-          // Skip DOM-only posts without GraphQL match - we only want posts with complete data
-          this.log("Skipping DOM post without GraphQL match (incomplete data)", domPostId);
+          // Fallback: Create DOM-only post when no GraphQL match found
+          // This ensures we collect posts even if GraphQL interception missed them
+          
+          // Generate numeric fallback ID (required for buildRegisterAdPayload)
+          const fallbackPostId =
+            domPostId ||
+            String(Math.floor(Date.now() / 1000) + Math.random() * 1000000).substring(0, 12);
+
+          const fallbackPost = {
+            id: fallbackPostId,
+            post_id: fallbackPostId,
+            author: postData.author,
+            message: postData.message,
+            to: postData.to,
+            source: "dom_fallback",
+            detectedAt: Date.now(),
+            inDOM: true,
+            domFoundAt: Date.now(),
+            isSponsored: this.postDetector.isSponsored(postElement),
+            visibleDuration: [],
+            attachments: [],
+          };
+
+          this.graphqlPostsMap.set(fallbackPostId, fallbackPost);
+          this.registerFingerprint(fallbackPost);
+          this.domElementByPostId.set(fallbackPostId, postElement);
+
+          if (this.visibilityTracker) {
+            this.visibilityTracker.track(postElement, fallbackPostId);
+          }
+
+          this.log("DOM fallback post created", fallbackPostId);
         }
 
         this.postDetector.markAsProcessed(postElement);

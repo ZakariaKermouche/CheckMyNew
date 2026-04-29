@@ -110,19 +110,35 @@ class FBGraphQLInterceptor {
   interceptFetch() {
     const self = this;
 
+    const isFacebookDataRequest = (url) => {
+      return (
+        url.includes("graphql") ||
+        url.includes("ajax/bootloader-endpoint") ||
+        url.includes("ajax/bulk-route-definitions")
+      );
+    };
+
     const wrappedFetch = async function (...args) {
       try {
         const url = self.normalizeRequestUrl(args[0]);
         const init = args[1] || {};
-        if (url.includes("graphql")) {
+        // if (url.includes("graphql")) {
+        //   self.maybeCaptureDocIdFromBody(init.body);
+        // } ===>
+        
+        if (isFacebookDataRequest(url)) {
           self.maybeCaptureDocIdFromBody(init.body);
+        }
+        if (url.includes('facebook.com')) {
+          console.log('[CMN] fetch intercepted:', url.split('?')[0]);
         }
       } catch (_) {}
 
       const response = await self.originalFetch.apply(this, args);
       try {
         const url = self.normalizeRequestUrl(args[0]);
-        if (url.includes("graphql")) {
+        // if (url.includes("graphql")) {
+        if (isFacebookDataRequest(url)) {
           self.interceptStats.fetch += 1;
           response
             .clone()
@@ -143,6 +159,14 @@ class FBGraphQLInterceptor {
   interceptXHR() {
     const self = this;
 
+    const isFacebookDataRequest = (url) => {
+      return (
+        url.includes("graphql") ||
+        url.includes("ajax/bootloader-endpoint") ||
+        url.includes("ajax/bulk-route-definitions")
+      );
+    };
+
     const WrappedXHR = function () {
       const xhr = new self.originalXHR();
 
@@ -156,8 +180,12 @@ class FBGraphQLInterceptor {
       xhr.send = function (body) {
         const requestUrl =
           typeof this.__cmn_url === "string" ? this.__cmn_url : "";
-        const isGraphql = requestUrl.includes("graphql");
+        // const isGraphql = requestUrl.includes("graphql");
+        const isGraphql = isFacebookDataRequest(requestUrl);
 
+        if (this.__cmn_url.includes('facebook.com')) {
+          console.log('[CMN] fetch intercepted:', this.__cmn_url.split('?')[0]);
+        }
         if (isGraphql) {
           self.maybeCaptureDocIdFromBody(body);
         }
@@ -176,7 +204,8 @@ class FBGraphQLInterceptor {
       };
 
       xhr.addEventListener("load", function () {
-        if (!this.__cmn_url?.includes("graphql")) return;
+        // if (!this.__cmn_url?.includes("graphql")) return;
+        if (!isFacebookDataRequest(this.__cmn_url)) return;
         self.interceptStats.xhr += 1;
 
         // Get response text
@@ -339,6 +368,18 @@ class FBGraphQLInterceptor {
     ) {
       return null;
     }
+
+    // Reject partial story copies — no actors means it's a nested fragment
+    if (!storyNode.actors || storyNode.actors.length === 0) {
+      return null;
+    }
+
+    // Reject if primary actor has no id (stripped nested copy)
+    const primaryActor = storyNode.actors[0];
+    if (!primaryActor?.id) {
+      return null;
+    }
+
     const post = {
       id: storyNode.id,
       post_id: storyNode.post_id,
@@ -653,38 +694,43 @@ class FBGraphQLInterceptor {
   extractFacebookPosts(jsonData) {
     const posts = [];
 
-    const responses = jsonData._allResults ? jsonData._allResults : [jsonData];
+    const seenIds = new Set();
+
+    const responses = jsonData._allResults
+      ? jsonData._allResults
+      : [jsonData];
 
     for (const response of responses) {
-      // Recursive search for Story nodes
       const findStories = (obj, depth = 0) => {
-        if (depth > 30) return; // Prevent infinite recursion
+        if (depth > 30) return;
+        if (!obj || typeof obj !== "object") return;
 
-        if (obj && typeof obj === "object") {
-          // Check if this node is a Story
-          if (obj.__typename === "Story") {
-            const postData = this.extractPostData(obj);
-            if (postData) {
-              posts.push(postData);
-            }
+        if (obj.__typename === "Story") {
+          const postData = this.extractPostData(obj);
+          if (postData) {
+            const key = postData.post_id || postData.id;
+
+            // Skip duplicates — same story appears at multiple depths
+            if (key && seenIds.has(key)) return;
+
+            if (key) seenIds.add(key);
+
+            posts.push(postData);
           }
 
-          // Recurse into all properties
-          for (const key in obj) {
-            if (obj.hasOwnProperty(key)) {
-              findStories(obj[key], depth + 1);
-            }
-          }
-        } else if (Array.isArray(obj)) {
-          for (const item of obj) {
-            findStories(item, depth + 1);
+          // Don't recurse further into a Story node —
+          // nested stories inside are fragments, not new posts
+          return;
+        }
+
+        for (const key in obj) {
+          if (obj.hasOwnProperty(key)) {
+            findStories(obj[key], depth + 1);
           }
         }
       };
 
       findStories(response);
-    }
-    if (posts.length > 0) {
     }
 
     return posts;
