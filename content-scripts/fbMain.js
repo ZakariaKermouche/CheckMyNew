@@ -995,7 +995,14 @@
     handleGraphQLPost(post) {
       try {
         this.stats.graphqlPostsReceived++;
-        const postId = post.post_id || post.id;
+        const postId = post.post_id || null;
+        if (!postId) {
+          console.log("[CMN] ⚠️  GraphQL post skipped: missing stable post_id", {
+            id: post.id || null,
+            message: post.message?.slice(0, 50) || "no message",
+          });
+          return;
+        }
 
         console.log("[CMN] 📥 GraphQL Post Received:", {
           postId,
@@ -1069,8 +1076,8 @@
             post.ad?.client_token || post.ad_client_token || null,
         };
 
-        this.graphqlPostsMap.set(postId, postData);
-        this.log("GraphQL post tracked", postId);
+        this.graphqlPostsMap.set(postData.post_id, postData);
+        this.log("GraphQL post tracked", postData.post_id);
         this.stats.newsPostsCollected++;
       } catch (error) {
         this.stats.errors++;
