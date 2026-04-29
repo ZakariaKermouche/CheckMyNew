@@ -23,6 +23,9 @@
       this.domPostsInProcess = new Map();
       this.pendingDomByFingerprint = new Map();
       this.docIdPrimeAttempts = new Set();
+      this.graphqlNetworkCache = [];
+      this.debugCounters = { interceptedPayloads: 0, matchedPosts: 0, domFallbackPosts: 0, skipReasons: {} };
+      window.__fbScraperDebug = { graphqlNetworkCacheSize: 0, interceptedPayloads: 0, matchedPosts: 0, domFallbackPosts: 0, skipReasons: {} };
 
       // Config
       this.config = {
@@ -51,6 +54,67 @@
       this.domElementByPostId = new Map(); // postId -> HTMLElement (best-effort)
     }
 
+
+    cacheGraphQLPayload(post) {
+      if (!post || typeof post !== "object") return;
+      const payload = {
+        id: post.id || null,
+        post_id: post.post_id || null,
+        author: post.author || null,
+        to: post.to || null,
+        message: post.message || "",
+        url: post.url || "",
+        attachments: Array.isArray(post.attachments) ? post.attachments : [],
+        images: Array.isArray(post.images) ? post.images : [],
+        videos: Array.isArray(post.videos) ? post.videos : [],
+        ad: post.ad || null,
+        source: post.source || "graphql",
+        cachedAt: Date.now(),
+      };
+      this.graphqlNetworkCache.push(payload);
+      this.debugCounters.interceptedPayloads += 1;
+      if (this.config.debugMode) {
+        console.log("[CMN][cacheGraphQLPayload]", { cacheSize: this.graphqlNetworkCache.length, payload });
+      }
+      if (this.graphqlNetworkCache.length > 600) {
+        this.graphqlNetworkCache = this.graphqlNetworkCache.slice(-600);
+      }
+      window.__fbScraperDebug = {
+        graphqlNetworkCacheSize: this.graphqlNetworkCache.length,
+        interceptedPayloads: this.debugCounters.interceptedPayloads,
+        matchedPosts: this.debugCounters.matchedPosts,
+        domFallbackPosts: this.debugCounters.domFallbackPosts,
+        skipReasons: this.debugCounters.skipReasons,
+      };
+    }
+
+    findBestNetworkMatch(domMetadata) {
+      if (this.config.debugMode) {
+        console.log("[CMN][findBestNetworkMatch] start", { cacheSize: this.graphqlNetworkCache.length, domMetadata });
+      }
+      const fingerprint = this.buildFingerprint(domMetadata || {});
+      const domMsg = this.normalizeStringForFingerprint(domMetadata?.message || "");
+      for (let i = this.graphqlNetworkCache.length - 1; i >= 0; i--) {
+        const candidate = this.graphqlNetworkCache[i];
+        if (!candidate) continue;
+        if (domMetadata?.postId && candidate.post_id && candidate.post_id === domMetadata.postId) {
+          if (this.config.debugMode) console.log("[CMN][findBestNetworkMatch] matched by postId", domMetadata.postId);
+          return candidate;
+        }
+        const cfp = this.buildFingerprint({ authorName: candidate.author?.name, groupName: candidate.to?.name, message: candidate.message });
+        if (fingerprint && cfp && fingerprint === cfp) {
+          if (this.config.debugMode) console.log("[CMN][findBestNetworkMatch] matched by fingerprint", fingerprint);
+          return candidate;
+        }
+        const cmsg = this.normalizeStringForFingerprint(candidate.message || "");
+        if (domMsg && cmsg && (domMsg.startsWith(cmsg.slice(0, 24)) || cmsg.startsWith(domMsg.slice(0, 24)))) {
+          if (this.config.debugMode) console.log("[CMN][findBestNetworkMatch] matched by message prefix");
+          return candidate;
+        }
+      }
+      if (this.config.debugMode) console.log("[CMN][findBestNetworkMatch] no match");
+      return null;
+    }
     normalizeStringForFingerprint(text) {
       if (!text) return "";
       return (
@@ -98,6 +162,13 @@
         bucket.add(key);
         this.fingerprintIndex.set(fingerprint, bucket);
       }
+      window.__fbScraperDebug = {
+        graphqlNetworkCacheSize: this.graphqlNetworkCache.length,
+        interceptedPayloads: this.debugCounters.interceptedPayloads,
+        matchedPosts: this.debugCounters.matchedPosts,
+        domFallbackPosts: this.debugCounters.domFallbackPosts,
+        skipReasons: this.debugCounters.skipReasons,
+      };
     }
 
     matchGraphQLByFingerprint(fingerprint) {
@@ -731,9 +802,9 @@
           : JSON.stringify({
               post_id: postData.post_id || null,
               id: postData.id || null,
-              message: postData.message || "",
+              message: networkMatch?.message || postData.message || "",
               url: postData.url || "",
-              author: postData.author || null,
+              author: networkMatch?.author || postData.author || null,
               attachments: formattedAttachments,
               ad: postData.ad || null,
             });
@@ -864,6 +935,13 @@
     log(...args) {
       if (this.config.debugMode || localStorage.getItem("CMN_DEBUG") === "1") {
       }
+      window.__fbScraperDebug = {
+        graphqlNetworkCacheSize: this.graphqlNetworkCache.length,
+        interceptedPayloads: this.debugCounters.interceptedPayloads,
+        matchedPosts: this.debugCounters.matchedPosts,
+        domFallbackPosts: this.debugCounters.domFallbackPosts,
+        skipReasons: this.debugCounters.skipReasons,
+      };
     }
 
     async init() {
@@ -947,6 +1025,13 @@
       } catch (error) {
         this.stats.errors++;
       }
+      window.__fbScraperDebug = {
+        graphqlNetworkCacheSize: this.graphqlNetworkCache.length,
+        interceptedPayloads: this.debugCounters.interceptedPayloads,
+        matchedPosts: this.debugCounters.matchedPosts,
+        domFallbackPosts: this.debugCounters.domFallbackPosts,
+        skipReasons: this.debugCounters.skipReasons,
+      };
     }
 
     // ✅ Setup bridge to receive posts from injected GraphQL script
@@ -995,7 +1080,15 @@
     handleGraphQLPost(post) {
       try {
         this.stats.graphqlPostsReceived++;
-        const postId = post.post_id || post.id;
+        this.cacheGraphQLPayload(post);
+        const postId = post.post_id || null;
+        if (!postId) {
+          console.log("[CMN] ⚠️  GraphQL post skipped: missing stable post_id", {
+            id: post.id || null,
+            message: post.message?.slice(0, 50) || "no message",
+          });
+          return;
+        }
 
         console.log("[CMN] 📥 GraphQL Post Received:", {
           postId,
@@ -1069,13 +1162,20 @@
             post.ad?.client_token || post.ad_client_token || null,
         };
 
-        this.graphqlPostsMap.set(postId, postData);
-        this.log("GraphQL post tracked", postId);
+        this.graphqlPostsMap.set(postData.post_id, postData);
+        this.log("GraphQL post tracked", postData.post_id);
         this.stats.newsPostsCollected++;
       } catch (error) {
         this.stats.errors++;
         console.error("[CMN] ❌ Error in handleGraphQLPost:", error);
       }
+      window.__fbScraperDebug = {
+        graphqlNetworkCacheSize: this.graphqlNetworkCache.length,
+        interceptedPayloads: this.debugCounters.interceptedPayloads,
+        matchedPosts: this.debugCounters.matchedPosts,
+        domFallbackPosts: this.debugCounters.domFallbackPosts,
+        skipReasons: this.debugCounters.skipReasons,
+      };
     }
 
     // ✅ FIXED: Handle DOM posts with safe error handling
@@ -1139,6 +1239,7 @@
         }
 
         if (gqlPost && matchedPostId) {
+          this.debugCounters.matchedPosts += 1;
           this.log("DOM matched GraphQL by fingerprint", matchedPostId);
           gqlPost.inDOM = true;
           gqlPost.domFoundAt = Date.now();
@@ -1163,14 +1264,64 @@
             this.visibilityTracker.track(postElement, matchedPostId);
           }
         } else {
-          // Skip DOM-only posts without GraphQL match - we only want posts with complete data
-          this.log("Skipping DOM post without GraphQL match (incomplete data)", domPostId);
+          const domOnlyId = domPostId || domFingerprint || `dom_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          {
+            this.debugCounters.domFallbackPosts += 1;
+            const existingDomPost = this.graphqlPostsMap.get(domOnlyId) || null;
+            const networkMatch = this.findBestNetworkMatch(domMetadata);
+            const domOnlyPost = {
+              id: domOnlyId,
+              post_id: domOnlyId,
+              author: networkMatch?.author || postData.author || null,
+              to: networkMatch?.to || postData.to || null,
+              message: networkMatch?.message || postData.message || "",
+              url: networkMatch?.url || domMetadata.url || "",
+              creation_time: null,
+              privacy: null,
+              feedback_id: null,
+              attachments: networkMatch?.attachments || [],
+              attachment_count: 0,
+              engagment: {
+                reaction_count: null,
+                comment_count: null,
+                share_count: null,
+              },
+              ad: null,
+              isSponsored: false,
+              externalDomain: this.extractDomain(domMetadata.url || ""),
+              detectedAt: Date.now(),
+              source: "dom_fallback",
+              inDOM: true,
+              domFoundAt: Date.now(),
+              visibleAt: null,
+              seenAt: null,
+            };
+
+            const merged = existingDomPost
+              ? { ...existingDomPost, ...domOnlyPost, message: domOnlyPost.message || existingDomPost.message || "" }
+              : domOnlyPost;
+
+            this.graphqlPostsMap.set(domOnlyId, merged);
+            this.domElementByPostId.set(domOnlyId, postElement);
+            this.log("Tracking DOM fallback post", domOnlyId);
+
+            if (this.visibilityTracker) {
+              this.visibilityTracker.track(postElement, domOnlyId);
+            }
+          }
         }
 
         this.postDetector.markAsProcessed(postElement);
       } catch (error) {
         this.stats.errors++;
       }
+      window.__fbScraperDebug = {
+        graphqlNetworkCacheSize: this.graphqlNetworkCache.length,
+        interceptedPayloads: this.debugCounters.interceptedPayloads,
+        matchedPosts: this.debugCounters.matchedPosts,
+        domFallbackPosts: this.debugCounters.domFallbackPosts,
+        skipReasons: this.debugCounters.skipReasons,
+      };
     }
 
     applyPendingDomMatch(postData) {
@@ -1209,6 +1360,13 @@
         this.visibilityTracker.track(pending.element, realId);
         this.domElementByPostId.set(realId, pending.element);
       }
+      window.__fbScraperDebug = {
+        graphqlNetworkCacheSize: this.graphqlNetworkCache.length,
+        interceptedPayloads: this.debugCounters.interceptedPayloads,
+        matchedPosts: this.debugCounters.matchedPosts,
+        domFallbackPosts: this.debugCounters.domFallbackPosts,
+        skipReasons: this.debugCounters.skipReasons,
+      };
     }
 
     // Handle when posts become visible
@@ -1485,6 +1643,13 @@
       } catch (e) {
         return null;
       }
+      window.__fbScraperDebug = {
+        graphqlNetworkCacheSize: this.graphqlNetworkCache.length,
+        interceptedPayloads: this.debugCounters.interceptedPayloads,
+        matchedPosts: this.debugCounters.matchedPosts,
+        domFallbackPosts: this.debugCounters.domFallbackPosts,
+        skipReasons: this.debugCounters.skipReasons,
+      };
     }
 
     setupEventHandlers() {
@@ -1574,11 +1739,25 @@
       if (this.visibilityTracker) {
         this.visibilityTracker.stop();
       }
+      window.__fbScraperDebug = {
+        graphqlNetworkCacheSize: this.graphqlNetworkCache.length,
+        interceptedPayloads: this.debugCounters.interceptedPayloads,
+        matchedPosts: this.debugCounters.matchedPosts,
+        domFallbackPosts: this.debugCounters.domFallbackPosts,
+        skipReasons: this.debugCounters.skipReasons,
+      };
     }
 
     handlePostRemoved(post) {
       if (this.config.debugMode) {
       }
+      window.__fbScraperDebug = {
+        graphqlNetworkCacheSize: this.graphqlNetworkCache.length,
+        interceptedPayloads: this.debugCounters.interceptedPayloads,
+        matchedPosts: this.debugCounters.matchedPosts,
+        domFallbackPosts: this.debugCounters.domFallbackPosts,
+        skipReasons: this.debugCounters.skipReasons,
+      };
     }
 
     async loadConfig() {
@@ -1627,6 +1806,13 @@
       if (this.visibilityTracker) {
         this.visibilityTracker.stop();
       }
+      window.__fbScraperDebug = {
+        graphqlNetworkCacheSize: this.graphqlNetworkCache.length,
+        interceptedPayloads: this.debugCounters.interceptedPayloads,
+        matchedPosts: this.debugCounters.matchedPosts,
+        domFallbackPosts: this.debugCounters.domFallbackPosts,
+        skipReasons: this.debugCounters.skipReasons,
+      };
     }
   }
 

@@ -127,7 +127,10 @@ class FBGraphQLInterceptor {
           response
             .clone()
             .text()
-            .then((text) => self.parseGraphQLText(text))
+            .then((text) => {
+              console.debug("[CMN][fetch-interceptor] graphql response", { length: text?.length || 0, url });
+              self.parseGraphQLText(text);
+            })
             .catch(() => {});
         }
       } catch (e) {}
@@ -193,6 +196,7 @@ class FBGraphQLInterceptor {
 
         if (!text) return;
 
+        console.debug("[CMN][xhr-interceptor] graphql response", { length: text?.length || 0, url: this.__cmn_url });
         self.parseGraphQLText(text);
       });
 
@@ -332,11 +336,7 @@ class FBGraphQLInterceptor {
    * Extract post information from a Story node
    */
   extractPostData(storyNode) {
-    if (
-      !storyNode ||
-      storyNode.__typename !== "Story" ||
-      !storyNode.viewability_config
-    ) {
+    if (!storyNode || storyNode.__typename !== "Story") {
       return null;
     }
     const post = {
@@ -538,6 +538,24 @@ class FBGraphQLInterceptor {
       }
     } catch (e) {
       // Privacy extraction failed
+    }
+    // Normalize frequently missing fields so downstream payloads are consistent.
+    post.id = post.id || storyNode.id || storyNode.post_id || null;
+    post.post_id = post.post_id || storyNode.post_id || storyNode.id || null;
+    post.message = post.message || "";
+    post.url =
+      post.url ||
+      storyNode?.wwwURL ||
+      storyNode?.url ||
+      "";
+    if (!post.author) {
+      post.author = {
+        name: "",
+        id: null,
+        page: "",
+        type: "",
+        profile_picture: "",
+      };
     }
     return post;
   }
