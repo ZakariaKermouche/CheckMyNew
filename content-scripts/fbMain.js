@@ -23,6 +23,7 @@
       this.domPostsInProcess = new Map();
       this.pendingDomByFingerprint = new Map();
       this.docIdPrimeAttempts = new Set();
+      this.graphqlNetworkCache = [];
 
       // Config
       this.config = {
@@ -51,6 +52,43 @@
       this.domElementByPostId = new Map(); // postId -> HTMLElement (best-effort)
     }
 
+
+    cacheGraphQLPayload(post) {
+      if (!post || typeof post !== "object") return;
+      const payload = {
+        id: post.id || null,
+        post_id: post.post_id || null,
+        author: post.author || null,
+        to: post.to || null,
+        message: post.message || "",
+        url: post.url || "",
+        attachments: Array.isArray(post.attachments) ? post.attachments : [],
+        images: Array.isArray(post.images) ? post.images : [],
+        videos: Array.isArray(post.videos) ? post.videos : [],
+        ad: post.ad || null,
+        source: post.source || "graphql",
+        cachedAt: Date.now(),
+      };
+      this.graphqlNetworkCache.push(payload);
+      if (this.graphqlNetworkCache.length > 600) {
+        this.graphqlNetworkCache = this.graphqlNetworkCache.slice(-600);
+      }
+    }
+
+    findBestNetworkMatch(domMetadata) {
+      const fingerprint = this.buildFingerprint(domMetadata || {});
+      const domMsg = this.normalizeStringForFingerprint(domMetadata?.message || "");
+      for (let i = this.graphqlNetworkCache.length - 1; i >= 0; i--) {
+        const candidate = this.graphqlNetworkCache[i];
+        if (!candidate) continue;
+        if (domMetadata?.postId && candidate.post_id && candidate.post_id === domMetadata.postId) return candidate;
+        const cfp = this.buildFingerprint({ authorName: candidate.author?.name, groupName: candidate.to?.name, message: candidate.message });
+        if (fingerprint && cfp && fingerprint === cfp) return candidate;
+        const cmsg = this.normalizeStringForFingerprint(candidate.message || "");
+        if (domMsg && cmsg && (domMsg.startsWith(cmsg.slice(0, 24)) || cmsg.startsWith(domMsg.slice(0, 24)))) return candidate;
+      }
+      return null;
+    }
     normalizeStringForFingerprint(text) {
       if (!text) return "";
       return (
@@ -731,9 +769,9 @@
           : JSON.stringify({
               post_id: postData.post_id || null,
               id: postData.id || null,
-              message: postData.message || "",
+              message: networkMatch?.message || postData.message || "",
               url: postData.url || "",
-              author: postData.author || null,
+              author: networkMatch?.author || postData.author || null,
               attachments: formattedAttachments,
               ad: postData.ad || null,
             });
@@ -995,6 +1033,7 @@
     handleGraphQLPost(post) {
       try {
         this.stats.graphqlPostsReceived++;
+        this.cacheGraphQLPayload(post);
         const postId = post.post_id || null;
         if (!postId) {
           console.log("[CMN] ⚠️  GraphQL post skipped: missing stable post_id", {
@@ -1175,17 +1214,18 @@
             this.log("Skipping DOM post without GraphQL match or stable ID", domPostId);
           } else {
             const existingDomPost = this.graphqlPostsMap.get(domOnlyId) || null;
+            const networkMatch = this.findBestNetworkMatch(domMetadata);
             const domOnlyPost = {
               id: domOnlyId,
               post_id: domOnlyId,
-              author: postData.author || null,
-              to: postData.to || null,
-              message: postData.message || "",
-              url: domMetadata.url || "",
+              author: networkMatch?.author || postData.author || null,
+              to: networkMatch?.to || postData.to || null,
+              message: networkMatch?.message || postData.message || "",
+              url: networkMatch?.url || domMetadata.url || "",
               creation_time: null,
               privacy: null,
               feedback_id: null,
-              attachments: [],
+              attachments: networkMatch?.attachments || [],
               attachment_count: 0,
               engagment: {
                 reaction_count: null,
