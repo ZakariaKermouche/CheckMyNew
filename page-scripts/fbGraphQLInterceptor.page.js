@@ -127,7 +127,10 @@ class FBGraphQLInterceptor {
           response
             .clone()
             .text()
-            .then((text) => self.parseGraphQLText(text))
+            .then((text) => {
+              console.debug("[CMN][fetch-interceptor] graphql response", { length: text?.length || 0, url });
+              self.parseGraphQLText(text);
+            })
             .catch(() => {});
         }
       } catch (e) {}
@@ -193,6 +196,7 @@ class FBGraphQLInterceptor {
 
         if (!text) return;
 
+        console.debug("[CMN][xhr-interceptor] graphql response", { length: text?.length || 0, url: this.__cmn_url });
         self.parseGraphQLText(text);
       });
 
