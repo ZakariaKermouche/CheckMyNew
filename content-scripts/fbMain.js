@@ -995,7 +995,14 @@
     handleGraphQLPost(post) {
       try {
         this.stats.graphqlPostsReceived++;
-        const postId = post.post_id || post.id;
+        const postId = post.post_id || null;
+        if (!postId) {
+          console.log("[CMN] ⚠️  GraphQL post skipped: missing stable post_id", {
+            id: post.id || null,
+            message: post.message?.slice(0, 50) || "no message",
+          });
+          return;
+        }
 
         console.log("[CMN] 📥 GraphQL Post Received:", {
           postId,
@@ -1069,8 +1076,8 @@
             post.ad?.client_token || post.ad_client_token || null,
         };
 
-        this.graphqlPostsMap.set(postId, postData);
-        this.log("GraphQL post tracked", postId);
+        this.graphqlPostsMap.set(postData.post_id, postData);
+        this.log("GraphQL post tracked", postData.post_id);
         this.stats.newsPostsCollected++;
       } catch (error) {
         this.stats.errors++;
@@ -1163,8 +1170,51 @@
             this.visibilityTracker.track(postElement, matchedPostId);
           }
         } else {
-          // Skip DOM-only posts without GraphQL match - we only want posts with complete data
-          this.log("Skipping DOM post without GraphQL match (incomplete data)", domPostId);
+          const domOnlyId = domPostId || domFingerprint;
+          if (!domOnlyId) {
+            this.log("Skipping DOM post without GraphQL match or stable ID", domPostId);
+          } else {
+            const existingDomPost = this.graphqlPostsMap.get(domOnlyId) || null;
+            const domOnlyPost = {
+              id: domOnlyId,
+              post_id: domOnlyId,
+              author: postData.author || null,
+              to: postData.to || null,
+              message: postData.message || "",
+              url: domMetadata.url || "",
+              creation_time: null,
+              privacy: null,
+              feedback_id: null,
+              attachments: [],
+              attachment_count: 0,
+              engagment: {
+                reaction_count: null,
+                comment_count: null,
+                share_count: null,
+              },
+              ad: null,
+              isSponsored: false,
+              externalDomain: this.extractDomain(domMetadata.url || ""),
+              detectedAt: Date.now(),
+              source: "dom_fallback",
+              inDOM: true,
+              domFoundAt: Date.now(),
+              visibleAt: null,
+              seenAt: null,
+            };
+
+            const merged = existingDomPost
+              ? { ...existingDomPost, ...domOnlyPost, message: domOnlyPost.message || existingDomPost.message || "" }
+              : domOnlyPost;
+
+            this.graphqlPostsMap.set(domOnlyId, merged);
+            this.domElementByPostId.set(domOnlyId, postElement);
+            this.log("Tracking DOM fallback post", domOnlyId);
+
+            if (this.visibilityTracker) {
+              this.visibilityTracker.track(postElement, domOnlyId);
+            }
+          }
         }
 
         this.postDetector.markAsProcessed(postElement);
