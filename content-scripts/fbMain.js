@@ -741,7 +741,7 @@
       return false;
     }
 
-    buildRegisterAdPayload(postData) {
+    buildRegisterAdPayload(postData, networkMatch = null) {
       if (!postData) return null;
       const postId = postData.post_id || postData.id;
 
@@ -793,6 +793,8 @@
       // Extract attachments in the proper format for raw_ad
       const formattedAttachments = this.extractAttachmentsFromPostData(postData);
 
+      const safeNetworkMatch = networkMatch || {};
+
       const maxRawAdLength = 30000;
       const rawAdGraphQL =
         typeof postData?.raw_ad === "string"
@@ -802,9 +804,9 @@
           : JSON.stringify({
               post_id: postData.post_id || null,
               id: postData.id || null,
-              message: postData.message || "",
-              url: postData.url || "",
-              author: postData.author || null,
+              message: safeNetworkMatch.message || postData.message || "",
+              url: safeNetworkMatch.url || postData.url || "",
+              author: safeNetworkMatch.author || postData.author || null,
               attachments: formattedAttachments,
               ad: postData.ad || null,
             });
@@ -903,14 +905,31 @@
       return description.toLowerCase().includes("private");
     }
 
-    queuePostForSending(postData) {
+    queuePostForSending(postData, networkMatch = null) {
       if (!postData) return false;
       if (postData.queued) return false;
       if (this.isPrivatePost(postData)) return false;
 
       postData.queued = true;
       if (!postData.register_ad_payload) {
-        postData.register_ad_payload = this.buildRegisterAdPayload(postData);
+        let resolvedNetworkMatch = networkMatch || null;
+        try {
+          if (!resolvedNetworkMatch) {
+            const domMetadata = {
+              postId: postData.post_id || postData.id || null,
+              message: postData.message || "",
+              authorName: postData.author?.name || postData.author || "",
+              groupName: postData.to?.name || postData.to || "",
+              url: postData.url || "",
+            };
+            resolvedNetworkMatch = this.findBestNetworkMatch(domMetadata);
+          }
+        } catch (e) {
+          console.warn("network enrichment failed", e);
+          resolvedNetworkMatch = null;
+        }
+
+        postData.register_ad_payload = this.buildRegisterAdPayload(postData, resolvedNetworkMatch);
         if (!postData.register_ad_payload) {
           postData.queued = false;
           return false;
