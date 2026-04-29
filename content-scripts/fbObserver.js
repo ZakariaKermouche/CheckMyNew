@@ -126,44 +126,16 @@ class FBObserver {
 
       const articles = this.findCandidatePosts();
       const extractedPostIds = [];
-      const duplicateIds = [];
-      const newlyAddedIds = [];
       const failedExtractions = [];
 
       for (const node of articles) {
-        let incoming = null;
         try {
-          incoming = this.extractPostData(node);
+          const extractedId = this.extractPostId(node);
+          if (extractedId) extractedPostIds.push(extractedId);
+          if (this.onPostFound) this.onPostFound(node);
         } catch (error) {
           this.stats.failures += 1;
           failedExtractions.push(String(error?.message || error));
-          continue;
-        }
-
-        if (!incoming?.postId) {
-          failedExtractions.push("missing_post_id");
-          continue;
-        }
-
-        extractedPostIds.push(incoming.postId);
-        const existing = this.collectedPosts.get(incoming.postId) || null;
-        const merged = this.mergePost(existing, incoming);
-        const changed = !existing || JSON.stringify(existing) !== JSON.stringify(merged);
-
-        this.collectedPosts.set(incoming.postId, merged);
-
-        if (!existing) {
-          this.stats.extracted += 1;
-          newlyAddedIds.push(incoming.postId);
-        } else if (changed) {
-          this.stats.updates += 1;
-        } else {
-          this.stats.duplicates += 1;
-          duplicateIds.push(incoming.postId);
-        }
-
-        if ((!existing || changed) && this.onPostFound) {
-          this.onPostFound(node);
         }
       }
 
@@ -171,8 +143,6 @@ class FBObserver {
         source,
         totalArticlesFound: articles.length,
         extractedPostIds,
-        duplicateIds,
-        newlyAddedIds,
         failedExtractions,
         mountedArticlesCount: document.querySelectorAll('[role="article"]').length,
       });
