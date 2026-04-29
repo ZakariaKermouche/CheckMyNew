@@ -1,58 +1,50 @@
 // content-scripts/fbObserver.js
-function isPublicPost(post) {
-  const svgs = post.querySelectorAll("svg");
-
-  for (const svg of svgs) {
-    const w = parseInt(svg.getAttribute("width") || "0", 10);
-    const h = parseInt(svg.getAttribute("height") || "0", 10);
-
-    if (w > 20 || h > 20) continue;
-    if (svg.closest("a")) continue;
-
-    const paths = svg.querySelectorAll("path");
-    if (paths.length >= 3) {
-      return true; // 🌍 public
-    }
-  }
-
-  return false;
-}
-
 class FBObserver {
-  constructor(onPostFound, onPostRemoved) {
+  constructor(onPostFound, onPostRemoved, options = {}) {
     this.observer = null;
     this.onPostFound = onPostFound;
     this.onPostRemoved = onPostRemoved;
     this.feedContainer = null;
     this.isObserving = false;
+
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
+
+    this.initialScanDelayMs = options.initialScanDelayMs || 1200;
+    this.periodicScanIntervalMs = options.periodicScanIntervalMs || 2000;
+    this.scanDebounceMs = options.scanDebounceMs || 180;
+
     this.initialScanTimer = null;
     this.periodicScanTimer = null;
-    // Delay initial DOM scan slightly so bootstrap/GraphQL caches can warm up.
-    this.initialScanDelayMs = 1500;
-    this.periodicScanIntervalMs = 3000;
+    this.scanDebounceTimer = null;
+
+    // Stable dedup/persistence layer. DOM is transient on Facebook.
+    this.collectedPosts = new Map(); // postId -> metadata snapshot
+    this.nodeToPostId = new WeakMap();
+
+    this.stats = {
+      scans: 0,
+      candidates: 0,
+      extracted: 0,
+      duplicates: 0,
+      updates: 0,
+      failures: 0,
+    };
   }
 
-  // Find the main feed container
   findFeedContainer() {
     return document.body;
   }
 
-  // Start observing the feed
   start() {
-    if (this.isObserving) {
-      return;
-    }
+    if (this.isObserving) return;
 
     this.feedContainer = this.findFeedContainer();
-
     if (!this.feedContainer) {
       this.scheduleReconnect();
       return;
     }
 
-    // Setup mutation observer
     this.observer = new MutationObserver((mutations) => {
       this.handleMutations(mutations);
     });
@@ -60,6 +52,8 @@ class FBObserver {
     this.observer.observe(this.feedContainer, {
       childList: true,
       subtree: true,
+      attributes: true,
+      attributeFilter: ["href", "data-ft", "aria-label", "role"],
     });
 
     this.isObserving = true;
@@ -67,211 +61,187 @@ class FBObserver {
 
     if (this.initialScanTimer) clearTimeout(this.initialScanTimer);
     this.initialScanTimer = setTimeout(() => {
-      // Only run if still observing.
-      if (this.isObserving) this.processExistingPosts();
+      if (this.isObserving) this.scanForPosts();
       this.initialScanTimer = null;
     }, this.initialScanDelayMs);
 
-    // Facebook feed virtualization can recycle existing DOM nodes without
-    // always emitting useful childList mutations. Periodic rescans catch
-    // those updates so tracking does not stall after the first posts.
     this.periodicScanTimer = setInterval(() => {
       if (!this.isObserving) return;
-      this.processExistingPosts();
+      this.scanForPosts();
     }, this.periodicScanIntervalMs);
   }
 
-  // Stop observing
   stop() {
     if (this.observer) {
       this.observer.disconnect();
       this.observer = null;
     }
-    if (this.initialScanTimer) {
-      clearTimeout(this.initialScanTimer);
-      this.initialScanTimer = null;
-    }
-    if (this.periodicScanTimer) {
-      clearInterval(this.periodicScanTimer);
-      this.periodicScanTimer = null;
-    }
+    if (this.initialScanTimer) clearTimeout(this.initialScanTimer);
+    if (this.periodicScanTimer) clearInterval(this.periodicScanTimer);
+    if (this.scanDebounceTimer) clearTimeout(this.scanDebounceTimer);
+    this.initialScanTimer = null;
+    this.periodicScanTimer = null;
+    this.scanDebounceTimer = null;
     this.isObserving = false;
   }
 
-  // Process existing posts in feed
-  processExistingPosts() {
-    if (!this.feedContainer) return;
-
-    const existingPosts = this.findAllPostElements(this.feedContainer);
-
-    existingPosts.forEach((post) => {
-      if (this.onPostFound) {
-        this.onPostFound(post);
-      }
-    });
-  }
-
-  // Handle mutation events
   handleMutations(mutations) {
-    const processedNodes = new Set();
+    let shouldScan = false;
 
-    mutations.forEach((mutation) => {
-      // Handle added nodes
-      mutation.addedNodes.forEach((node) => {
-        if (node.nodeType !== Node.ELEMENT_NODE) return;
-        if (processedNodes.has(node)) return;
-
-        processedNodes.add(node);
-
-        const found = new Set();
-
-        // Check if node itself is a post
-        if (this.isPostElement(node)) {
-          found.add(node);
+    for (const mutation of mutations) {
+      if (mutation.type === "childList") {
+        if ((mutation.addedNodes && mutation.addedNodes.length) || (mutation.removedNodes && mutation.removedNodes.length)) {
+          shouldScan = true;
         }
+      } else if (mutation.type === "attributes") {
+        shouldScan = true;
+      }
 
-        // Check for posts within the node
-        const posts = this.findAllPostElements(node);
-        posts.forEach((post) => found.add(post));
-
-        found.forEach((post) => {
-          if (processedNodes.has(post)) return;
-          processedNodes.add(post);
-          if (this.onPostFound) {
-            this.onPostFound(post);
+      if (mutation.removedNodes && this.onPostRemoved) {
+        mutation.removedNodes.forEach((node) => {
+          if (node?.nodeType === Node.ELEMENT_NODE && node.getAttribute?.("role") === "article") {
+            this.onPostRemoved(node);
           }
         });
-      });
-
-      // Handle removed nodes (optional)
-      mutation.removedNodes.forEach((node) => {
-        if (node.nodeType !== Node.ELEMENT_NODE) return;
-
-        if (this.isPostElement(node) && this.onPostRemoved) {
-          this.onPostRemoved(node);
-        }
-      });
-    });
-  }
-
-  // Find the real post root from a profile header
-  findPostRootFromProfile(profileEl) {
-    let el = profileEl;
-
-    while (el && el !== document.body) {
-      const hasMenu =
-        el.querySelector('[aria-label="Actions for this post"]') ||
-        el.querySelector('[aria-label="More actions"]');
-
-      if (hasMenu) {
-        return el;
       }
-
-      el = el.parentElement;
     }
+
+    if (shouldScan) this.scheduleScan();
+  }
+
+  scheduleScan() {
+    if (this.scanDebounceTimer) return;
+    this.scanDebounceTimer = setTimeout(() => {
+      this.scanDebounceTimer = null;
+      this.scanForPosts();
+    }, this.scanDebounceMs);
+  }
+
+  scanForPosts() {
+    if (!this.feedContainer) return;
+    this.stats.scans += 1;
+
+    const candidates = this.findCandidatePosts(this.feedContainer);
+    this.stats.candidates += candidates.length;
+
+    for (const node of candidates) {
+      try {
+        const incoming = this.extractPostData(node);
+        if (!incoming?.postId) continue;
+
+        const existing = this.collectedPosts.get(incoming.postId) || null;
+        const merged = this.mergePost(existing, incoming);
+        const changed = !existing || JSON.stringify(existing) !== JSON.stringify(merged);
+
+        this.collectedPosts.set(incoming.postId, merged);
+        this.nodeToPostId.set(node, incoming.postId);
+
+        if (!existing) this.stats.extracted += 1;
+        if (existing && changed) this.stats.updates += 1;
+        if (existing && !changed) this.stats.duplicates += 1;
+
+        if (( !existing || changed ) && this.onPostFound) {
+          this.onPostFound(node);
+        }
+      } catch (error) {
+        this.stats.failures += 1;
+        console.debug("[CMN][FBObserver] extract failure", error);
+      }
+    }
+  }
+
+  findCandidatePosts(container) {
+    const selectors = [
+      '[role="article"]',
+      'div[data-pagelet^="FeedUnit_"]',
+      'div[data-ad-comet-preview="message"]',
+      'a[href*="/posts/"]',
+      'a[href*="/permalink/"]',
+      'a[href*="story_fbid="]',
+    ];
+
+    const candidateSet = new Set();
+    for (const selector of selectors) {
+      container.querySelectorAll(selector).forEach((el) => {
+        const article = el.getAttribute("role") === "article" ? el : el.closest('[role="article"]');
+        if (article) candidateSet.add(article);
+      });
+    }
+
+    return Array.from(candidateSet);
+  }
+
+  extractPostId(node) {
+    if (!node) return null;
+
+    const anchors = Array.from(node.querySelectorAll('a[href]'));
+    for (const a of anchors) {
+      const href = a.getAttribute("href") || "";
+      const match = href.match(/story_fbid=(\d+)/) || href.match(/\/posts\/(\d+)/) || href.match(/\/permalink\/(\d+)/) || href.match(/fbid=(\d+)/);
+      if (match?.[1]) return match[1];
+    }
+
+    const dataFtEl = node.closest("[data-ft]") || node.querySelector("[data-ft]");
+    const dataFt = dataFtEl?.getAttribute?.("data-ft") || "";
+    const ftMatch = dataFt.match(/"top_level_post_id"\s*:\s*"(\d+)"/) || dataFt.match(/"mf_story_key"\s*:\s*"(\d+)"/);
+    if (ftMatch?.[1]) return ftMatch[1];
 
     return null;
   }
 
-  // Find all post elements in a container
-  findAllPostElements(container) {
-    const markers = container.querySelectorAll(
-      'div[data-ad-rendering-role="profile_name"], [data-ad-rendering-role="story_message"]'
-    );
+  extractPostData(node) {
+    const postId = this.extractPostId(node);
+    if (!postId) return null;
 
-    const posts = [];
+    const messageNode =
+      node.querySelector('[data-ad-rendering-role="story_message"]') ||
+      node.querySelector('[data-ad-preview="message"]') ||
+      node.querySelector('[data-ad-comet-preview="message"]');
 
-    markers.forEach((marker) => {
-      const post = this.findPostContainerFromMarker(marker);
-      if (post && this.isValidPostElement(post)) posts.push(post);
-    });
+    const message = (messageNode?.innerText || "").trim();
+    const permalink = node.querySelector('a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid="]')?.href || "";
+    const author = node.querySelector('h2 a[role="link"], h3 a[role="link"], strong a[role="link"]')?.textContent?.trim() || "";
 
-    const deduped = [...new Set(posts)];
-    return deduped;
+    return {
+      postId,
+      message,
+      author,
+      permalink,
+      seenAt: Date.now(),
+    };
   }
 
-  // Check if element is a post
-  isPostElement(element) {
-    if (!element || !element.querySelector) return false;
-
-    const hasMessage = !!element.querySelector(
-      '[data-ad-rendering-role="story_message"], [data-ad-preview="message"], [data-ad-comet-preview="message"]'
-    );
-    const hasProfile = !!element.querySelector(
-      '[data-ad-rendering-role="profile_name"], [role="link"][href*="/profile.php"]'
-    );
-    const hasToolbar = !!element.querySelector(
-      '[aria-label="Actions for this post"]'
-    );
-
-    const isArticle = element.getAttribute("role") === "article";
-
-    return hasProfile && (hasMessage || hasToolbar);
+  mergePost(existing, incoming) {
+    if (!existing) return { ...incoming };
+    return {
+      ...existing,
+      ...incoming,
+      message: incoming.message || existing.message || "",
+      author: incoming.author || existing.author || "",
+      permalink: incoming.permalink || existing.permalink || "",
+      firstSeenAt: existing.firstSeenAt || existing.seenAt || incoming.seenAt,
+      seenAt: incoming.seenAt || existing.seenAt,
+    };
   }
 
-  // Find post container from a marker element
-  findPostContainerFromMarker(marker) {
-    if (!marker) return null;
-
-    // Fast path: FB often wraps posts in virtualized container
-    const virtualized = marker.closest('div[data-virtualized="false"]');
-    if (virtualized && this.isPostElement(virtualized)) return virtualized;
-
-    // Walk up to find a container with expected markers
-    let current = marker;
-    let depth = 0;
-    const maxDepth = 12;
-
-    while (current && current !== document.body && depth < maxDepth) {
-      if (this.isPostElement(current)) return current;
-      current = current.parentElement;
-      depth++;
-    }
-
-    return null;
-  }
-
-  // Basic sanity check for post-like nodes
-  isValidPostElement(element) {
-    if (!element) return false;
-    const text = element.textContent?.trim() || "";
-    const hasEnoughText = text.length > 20;
-    const visible =
-      (element.offsetWidth || 0) > 0 && (element.offsetHeight || 0) > 0;
-    return hasEnoughText && visible;
-  }
-
-  // Schedule reconnection attempt
   scheduleReconnect() {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      return;
-    }
-
-    this.reconnectAttempts++;
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 10000);
-
-
-    setTimeout(() => {
-      this.start();
-    }, delay);
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
+    this.reconnectAttempts += 1;
+    const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 10000);
+    setTimeout(() => this.start(), delay);
   }
 
-  // Reset observer (useful for navigation)
   reset() {
     this.stop();
-    this.reconnectAttempts = 0;
-    setTimeout(() => this.start(), 1000);
+    this.collectedPosts.clear();
+    this.start();
   }
 
-  // Get status
-  getStatus() {
+  getStats() {
     return {
+      ...this.stats,
+      observedPosts: this.collectedPosts.size,
       isObserving: this.isObserving,
-      hasFeedContainer: !!this.feedContainer,
-      reconnectAttempts: this.reconnectAttempts,
     };
   }
 }
-
-// Export for use in other scripts
-window.FBObserver = FBObserver;

@@ -996,21 +996,28 @@
       try {
         this.stats.graphqlPostsReceived++;
         const postId = post.post_id || post.id;
+        const fallbackId =
+          postId ||
+          [
+            post.author?.id || post.author?.name || "anon",
+            post.creation_time || "no_time",
+            (post.message || "").slice(0, 80),
+          ].join("::");
 
         console.log("[CMN] 📥 GraphQL Post Received:", {
-          postId,
+          postId: postId || fallbackId,
           isSponsored: !!post.ad?.ad_id,
           message: post.message?.slice(0, 50) || "no message",
           author: post.author?.name || "unknown",
           timestamp: Date.now(),
         });
 
-        if (this.postDetector.isProcessedGraphQL(postId)) {
-          console.log("[CMN] ⚠️  Post already processed:", postId);
+        if (this.postDetector.isProcessedGraphQL(fallbackId)) {
+          console.log("[CMN] ⚠️  Post already processed:", fallbackId);
           return;
         }
 
-        this.postDetector.markAsProcessedGraphQL(postId);
+        this.postDetector.markAsProcessedGraphQL(fallbackId);
 
         const author =
           post.author && typeof post.author === "object"
@@ -1026,8 +1033,8 @@
             : null;
 
         const postData = {
-          id: post.id || postId,
-          post_id: postId,
+          id: post.id || postId || fallbackId,
+          post_id: postId || fallbackId,
           author,
           to,
           message: post.message,
@@ -1069,8 +1076,8 @@
             post.ad?.client_token || post.ad_client_token || null,
         };
 
-        this.graphqlPostsMap.set(postId, postData);
-        this.log("GraphQL post tracked", postId);
+        this.graphqlPostsMap.set(postData.post_id, postData);
+        this.log("GraphQL post tracked", postData.post_id);
         this.stats.newsPostsCollected++;
       } catch (error) {
         this.stats.errors++;
